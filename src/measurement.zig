@@ -1,11 +1,12 @@
 const std = @import("std");
 
 pub const result_schema = "r4os.perfdiag.ndjson";
-pub const result_schema_version: u32 = 1;
+pub const result_schema_version: u32 = 2;
 pub const default_repetitions: u8 = 5;
 pub const min_repetitions: u8 = 3;
 pub const max_repetitions: u8 = 20;
 pub const blit_min_duration_ms: u64 = 250;
+pub const clock_calls_per_sample: u64 = 10_000;
 pub const bytes_per_kb: u64 = 1024;
 pub const kb_per_mb: u64 = 1024;
 pub const bytes_per_mb: u64 = bytes_per_kb * kb_per_mb;
@@ -38,9 +39,22 @@ pub const CacheState = enum {
     }
 };
 
+pub const BenchmarkKind = enum {
+    blit,
+    clock,
+
+    pub fn name(self: BenchmarkKind) []const u8 {
+        return switch (self) {
+            .blit => "blit",
+            .clock => "clock",
+        };
+    }
+};
+
 pub const ParseError = enum {
     none,
     conflicting_mode,
+    conflicting_benchmark,
     conflicting_cache_state,
     invalid_repetitions,
     unknown_argument,
@@ -49,6 +63,7 @@ pub const ParseError = enum {
         return switch (self) {
             .none => "none",
             .conflicting_mode => "conflicting-mode",
+            .conflicting_benchmark => "conflicting-benchmark",
             .conflicting_cache_state => "conflicting-cache-state",
             .invalid_repetitions => "invalid-repetitions",
             .unknown_argument => "unknown-argument",
@@ -60,6 +75,8 @@ pub const Config = struct {
     mode: Mode = .baseline,
     mode_explicit: bool = false,
     cache_state: CacheState = .unspecified,
+    benchmark_kind: BenchmarkKind = .blit,
+    benchmark_explicit: bool = false,
     repetitions: u8 = default_repetitions,
     show_help: bool = false,
     parse_error: ParseError = .none,
@@ -89,8 +106,14 @@ pub fn parseArgs(args: []const u8) Config {
             selectMode(&config, .baseline);
         } else if (equalsIgnoreCase(token, "/CONFORMANCE")) {
             selectMode(&config, .conformance);
-        } else if (equalsIgnoreCase(token, "/BENCHMARK") or equalsIgnoreCase(token, "/BLIT")) {
+        } else if (equalsIgnoreCase(token, "/BENCHMARK")) {
             selectMode(&config, .benchmark);
+        } else if (equalsIgnoreCase(token, "/BLIT")) {
+            selectMode(&config, .benchmark);
+            selectBenchmark(&config, .blit);
+        } else if (equalsIgnoreCase(token, "/CLOCK")) {
+            selectMode(&config, .benchmark);
+            selectBenchmark(&config, .clock);
         } else if (equalsIgnoreCase(token, "/COLD")) {
             selectCacheState(&config, .cold);
         } else if (equalsIgnoreCase(token, "/WARM")) {
@@ -122,6 +145,13 @@ pub fn throughputKbPerSecond(bytes: u64, elapsed_ticks: u64, hz: u32) u64 {
     if (bytes == 0 or elapsed_ticks == 0 or hz == 0) return 0;
     const numerator = @as(u128, bytes) * @as(u128, hz);
     const denominator = @as(u128, elapsed_ticks) * bytes_per_kb;
+    return @intCast(numerator / denominator);
+}
+
+pub fn throughputKbPerSecondNs(bytes: u64, elapsed_ns: u64) u64 {
+    if (bytes == 0 or elapsed_ns == 0) return 0;
+    const numerator = @as(u128, bytes) * 1_000_000_000;
+    const denominator = @as(u128, elapsed_ns) * bytes_per_kb;
     return @intCast(numerator / denominator);
 }
 
@@ -163,6 +193,15 @@ fn selectCacheState(config: *Config, next: CacheState) void {
         return;
     }
     config.cache_state = next;
+}
+
+fn selectBenchmark(config: *Config, next: BenchmarkKind) void {
+    if (config.benchmark_explicit and config.benchmark_kind != next) {
+        setParseError(config, .conflicting_benchmark);
+        return;
+    }
+    config.benchmark_kind = next;
+    config.benchmark_explicit = true;
 }
 
 fn setParseError(config: *Config, value: ParseError) void {
@@ -220,12 +259,22 @@ test "arguments select a labeled repeated blit benchmark" {
     try std.testing.expect(config.valid());
     try std.testing.expectEqual(Mode.benchmark, config.mode);
     try std.testing.expect(config.mode_explicit);
+    try std.testing.expectEqual(BenchmarkKind.blit, config.benchmark_kind);
     try std.testing.expectEqual(CacheState.warm, config.cache_state);
     try std.testing.expectEqual(@as(u8, 7), config.repetitions);
 }
 
+test "arguments select the monotonic clock benchmark" {
+    const config = parseArgs("/benchmark /clock /repeat=3 /warm");
+    try std.testing.expect(config.valid());
+    try std.testing.expectEqual(Mode.benchmark, config.mode);
+    try std.testing.expectEqual(BenchmarkKind.clock, config.benchmark_kind);
+    try std.testing.expectEqual(@as(u8, 3), config.repetitions);
+}
+
 test "arguments reject conflicting modes states and repetition bounds" {
     try std.testing.expectEqual(ParseError.conflicting_mode, parseArgs("/baseline /conformance").parse_error);
+    try std.testing.expectEqual(ParseError.conflicting_benchmark, parseArgs("/blit /clock").parse_error);
     try std.testing.expectEqual(ParseError.conflicting_cache_state, parseArgs("/cold /warm").parse_error);
     try std.testing.expectEqual(ParseError.invalid_repetitions, parseArgs("/benchmark /repeat:2").parse_error);
     try std.testing.expectEqual(ParseError.invalid_repetitions, parseArgs("/benchmark /repeat:no").parse_error);
@@ -243,6 +292,12 @@ test "throughput uses 1024-byte KB and the captured frequency" {
     try std.testing.expectEqual(@as(u64, 10 * kb_per_mb), throughputKbPerSecond(ten_mb, 100, 100));
     try std.testing.expectEqual(@as(u64, 10 * kb_per_mb), throughputKbPerSecond(ten_mb, 1000, 1000));
     try std.testing.expectEqual(@as(u64, 0), throughputKbPerSecond(ten_mb, 0, 1000));
+}
+
+test "nanosecond throughput preserves the 1024-byte KB convention" {
+    const ten_mb = 10 * bytes_per_mb;
+    try std.testing.expectEqual(@as(u64, 10 * kb_per_mb), throughputKbPerSecondNs(ten_mb, 1_000_000_000));
+    try std.testing.expectEqual(@as(u64, 0), throughputKbPerSecondNs(ten_mb, 0));
 }
 
 test "distribution preserves small differences and tail values" {

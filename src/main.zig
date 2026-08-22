@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.2.0";
+const module_version = "0.3.0";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -32,8 +32,18 @@ const CheckResult = struct {
 const BlitSample = struct {
     iterations: u64 = 0,
     elapsed_ticks: u64 = 0,
+    elapsed_ns: u64 = 0,
     bytes: u64 = 0,
     kb_per_second: u64 = 0,
+};
+
+const ClockSample = struct {
+    calls: u64 = 0,
+    elapsed_ns: u64 = 0,
+    ns_per_call: u64 = 0,
+    min_positive_delta_ns: u64 = 0,
+    zero_deltas: u64 = 0,
+    regressions: u64 = 0,
 };
 
 const RunStats = struct {
@@ -47,6 +57,8 @@ const RunStats = struct {
     dropped_checks: u32 = 0,
     blit_samples: [measurement.max_repetitions]BlitSample = .{BlitSample{}} ** measurement.max_repetitions,
     blit_sample_count: usize = 0,
+    clock_samples: [measurement.max_repetitions]ClockSample = .{ClockSample{}} ** measurement.max_repetitions,
+    clock_sample_count: usize = 0,
 };
 const avx_pattern_a: [32]u8 align(32) = .{
     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
@@ -96,7 +108,10 @@ const App = struct {
     draw: r4os.r4draw.Context,
     audio: r4os.r4audio.Context,
     config: measurement.Config,
+    monotonic_clock: r4os.abi.MonotonicClockInfo = .{},
+    monotonic_clock_available: bool = false,
     time_state: r4os.abi.TimeState = .{},
+    time_state_available: bool = false,
     kernel_version: ?r4os.abi.KernelVersion = null,
     hardware: ?r4os.abi.HardwareSummary = null,
     stats: RunStats = .{},
@@ -131,7 +146,11 @@ const App = struct {
             self.sys.println("PERFDIAG result: FAILED");
             return 1;
         };
-        self.time_state = self.sys.timeState();
+        self.monotonic_clock_available = self.queryMonotonicClock(&self.monotonic_clock);
+        if (!self.monotonic_clock_available) {
+            self.time_state = self.sys.timeState();
+            self.time_state_available = true;
+        }
 
         if (self.config.mode != .benchmark) self.printRunHeader();
 
@@ -147,7 +166,10 @@ const App = struct {
                 has_post_summary = true;
             },
             .benchmark => {
-                ok = self.probeBlitThroughput();
+                ok = switch (self.config.benchmark_kind) {
+                    .blit => self.probeBlitThroughput(),
+                    .clock => self.probeMonotonicClock(),
+                };
                 if (self.captureSummary()) |summary| {
                     post_summary = summary;
                 } else {
@@ -155,8 +177,16 @@ const App = struct {
                 }
                 has_post_summary = true;
                 self.printRunHeader();
-                self.printBlitResults();
-                self.printCheck("Blit throughput benchmark", ok);
+                switch (self.config.benchmark_kind) {
+                    .blit => {
+                        self.printBlitResults();
+                        self.printCheck("Blit throughput benchmark", ok);
+                    },
+                    .clock => {
+                        self.printClockResults();
+                        self.printCheck("Monotonic clock benchmark", ok);
+                    },
+                }
             },
         }
 
@@ -182,6 +212,7 @@ const App = struct {
     fn runConformance(self: *App, out_summary: *r4os.abi.ProgramPerformanceSummary) bool {
         var ok = true;
         ok = self.testApiHeader() and ok;
+        ok = self.testMonotonicClock() and ok;
         self.sys.sleepTicks(1);
         var fs_probe: [64]u8 = undefined;
         _ = self.sys.fileReadAt("C:\\R4OS\\CONFIG\\VERSION.R4S", 0, fs_probe[0..]);
@@ -207,6 +238,7 @@ const App = struct {
         };
         out_summary.* = summary;
         ok = self.testSummary(summary) and ok;
+        ok = self.testSummaryClock(summary) and ok;
         ok = self.testPreemption(summary) and ok;
         ok = self.testSchedulerLatency(summary) and ok;
         ok = self.testFpuState(summary) and ok;
@@ -215,7 +247,13 @@ const App = struct {
         ok = self.testTasks(summary) and ok;
         ok = self.testStorage(summary) and ok;
         ok = self.testBootPhases(summary) and ok;
+        ok = self.testIrqTiming() and ok;
         return ok;
+    }
+
+    fn queryMonotonicClock(self: *App, out: *r4os.abi.MonotonicClockInfo) bool {
+        out.* = .{};
+        return self.sys.hasFn("monotonic_clock") and self.sys.monotonicClock(out) > 0;
     }
 
     fn captureSummary(self: *App) ?r4os.abi.ProgramPerformanceSummary {
@@ -240,11 +278,11 @@ const App = struct {
         self.sys.println(runClassification(self.config.mode));
         self.sys.write("  Cache state: ");
         self.sys.println(self.config.cache_state.name());
-        self.sys.write("  Timer captured once: backend=");
-        self.sys.write(timeBackendName(self.time_state.monotonic_backend));
-        self.sys.write(" hz=");
-        self.sys.printU64(self.time_state.monotonic_hz);
-        self.sys.println("");
+        if (self.config.mode == .benchmark) {
+            self.sys.write("  Benchmark: ");
+            self.sys.println(self.config.benchmark_kind.name());
+        }
+        self.printClockHeader();
         if (!self.config.mode_explicit) {
             self.sys.println("  No mode supplied; passive /BASELINE is the safe default.");
         }
@@ -261,7 +299,44 @@ const App = struct {
         self.sys.println("  PERFDIAG /BASELINE");
         self.sys.println("  PERFDIAG /CONFORMANCE");
         self.sys.println("  PERFDIAG /BENCHMARK /BLIT /REPEAT:5 /COLD|/WARM");
+        self.sys.println("  PERFDIAG /BENCHMARK /CLOCK /REPEAT:5 /WARM");
         self.sys.println("No mode runs the passive baseline. Repetitions: 3..20.");
+    }
+
+    fn printClockHeader(self: *App) void {
+        if (self.monotonic_clock_available) {
+            self.sys.write("  Monotonic clock: source=");
+            self.sys.write(clockSourceName(self.monotonic_clock.source));
+            self.sys.write(" generation=");
+            self.sys.printU64(self.monotonic_clock.generation);
+            self.sys.write(" resolutionNs=");
+            self.sys.printU64(self.monotonic_clock.resolution_ns);
+            self.sys.write(" event=");
+            self.sys.write(timeBackendName(self.monotonic_clock.event_backend));
+            self.sys.write(" eventHz=");
+            self.sys.printU64(self.monotonic_clock.event_effective_hz);
+            self.sys.println("");
+            return;
+        }
+        self.sys.write("  Monotonic clock: legacy-event fallback backend=");
+        self.sys.write(timeBackendName(self.time_state.monotonic_backend));
+        self.sys.write(" hz=");
+        self.sys.printU64(self.time_state.monotonic_hz);
+        self.sys.println("");
+    }
+
+    fn eventBackend(self: *const App) u32 {
+        return if (self.monotonic_clock_available)
+            self.monotonic_clock.event_backend
+        else
+            self.time_state.monotonic_backend;
+    }
+
+    fn eventHz(self: *const App) u32 {
+        return if (self.monotonic_clock_available)
+            self.monotonic_clock.event_effective_hz
+        else
+            self.time_state.monotonic_hz;
     }
 
     fn printObserverCost(self: *App) void {
@@ -303,12 +378,28 @@ const App = struct {
         self.printJsonString(runClassification(self.config.mode));
         self.sys.write(",\"cache_state\":");
         self.printJsonString(self.config.cache_state.name());
+        self.sys.write(",\"benchmark\":");
+        self.printJsonString(self.config.benchmark_kind.name());
         self.sys.write(",\"repetitions\":");
         self.sys.printU64(if (self.config.mode == .benchmark) self.config.repetitions else 1);
-        self.sys.write(",\"timer_backend\":");
-        self.printJsonString(timeBackendName(self.time_state.monotonic_backend));
-        self.sys.write(",\"timer_hz\":");
-        self.sys.printU64(self.time_state.monotonic_hz);
+        self.sys.write(",\"clock_available\":");
+        self.printJsonBool(self.monotonic_clock_available);
+        self.sys.write(",\"clock_source\":");
+        self.printJsonString(if (self.monotonic_clock_available) clockSourceName(self.monotonic_clock.source) else "legacy-event");
+        self.sys.write(",\"clock_flags\":");
+        self.sys.printU64(if (self.monotonic_clock_available) self.monotonic_clock.flags else 0);
+        self.sys.write(",\"clock_generation\":");
+        self.sys.printU64(if (self.monotonic_clock_available) self.monotonic_clock.generation else 0);
+        self.sys.write(",\"clock_resolution_ns\":");
+        self.sys.printU64(if (self.monotonic_clock_available) self.monotonic_clock.resolution_ns else 0);
+        self.sys.write(",\"event_backend\":");
+        self.printJsonString(timeBackendName(self.eventBackend()));
+        self.sys.write(",\"event_hz\":");
+        self.sys.printU64(self.eventHz());
+        self.sys.write(",\"event_frequency_numerator\":");
+        self.sys.printU64(if (self.monotonic_clock_available) self.monotonic_clock.event_frequency_numerator else self.eventHz());
+        self.sys.write(",\"event_frequency_denominator\":");
+        self.sys.printU64(if (self.monotonic_clock_available) self.monotonic_clock.event_frequency_denominator else 1);
         self.sys.write(",\"api_version\":");
         self.sys.printU64(self.sys.tableAbiVersion());
         self.sys.write(",\"kernel_major\":");
@@ -357,8 +448,10 @@ const App = struct {
             self.sys.printU64(sample.iterations);
             self.sys.write(",\"elapsed_ticks\":");
             self.sys.printU64(sample.elapsed_ticks);
-            self.sys.write(",\"timer_hz\":");
-            self.sys.printU64(self.time_state.monotonic_hz);
+            self.sys.write(",\"elapsed_ns\":");
+            self.sys.printU64(sample.elapsed_ns);
+            self.sys.write(",\"event_hz\":");
+            self.sys.printU64(self.eventHz());
             self.sys.write(",\"bytes\":");
             self.sys.printU64(sample.bytes);
             self.sys.write(",\"kb_per_second\":");
@@ -367,6 +460,48 @@ const App = struct {
             self.sys.printU64(measurement.bytes_per_kb);
             self.sys.write(",\"mb_kb\":");
             self.sys.printU64(measurement.kb_per_mb);
+            self.sys.println("}");
+        }
+
+        var clock_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        sample_index = 0;
+        while (sample_index < self.stats.clock_sample_count) : (sample_index += 1) {
+            const sample = self.stats.clock_samples[sample_index];
+            clock_costs[sample_index] = sample.ns_per_call;
+            self.machineLinePrefix("clock_sample");
+            self.sys.write(",\"sample\":");
+            self.sys.printU64(sample_index + 1);
+            self.sys.write(",\"calls\":");
+            self.sys.printU64(sample.calls);
+            self.sys.write(",\"elapsed_ns\":");
+            self.sys.printU64(sample.elapsed_ns);
+            self.sys.write(",\"ns_per_call\":");
+            self.sys.printU64(sample.ns_per_call);
+            self.sys.write(",\"min_positive_delta_ns\":");
+            self.sys.printU64(sample.min_positive_delta_ns);
+            self.sys.write(",\"zero_deltas\":");
+            self.sys.printU64(sample.zero_deltas);
+            self.sys.write(",\"regressions\":");
+            self.sys.printU64(sample.regressions);
+            self.sys.println("}");
+        }
+        if (self.stats.clock_sample_count > 0) {
+            const distribution = measurement.summarize(clock_costs[0..self.stats.clock_sample_count]);
+            self.machineLinePrefix("clock_distribution");
+            self.sys.write(",\"unit\":\"ns/call\",\"count\":");
+            self.sys.printU64(distribution.count);
+            self.sys.write(",\"min\":");
+            self.sys.printU64(distribution.minimum);
+            self.sys.write(",\"p50\":");
+            self.sys.printU64(distribution.p50);
+            self.sys.write(",\"p95\":");
+            self.sys.printU64(distribution.p95);
+            self.sys.write(",\"p99\":");
+            self.sys.printU64(distribution.p99);
+            self.sys.write(",\"max\":");
+            self.sys.printU64(distribution.maximum);
+            self.sys.write(",\"mean\":");
+            self.sys.printU64(distribution.mean);
             self.sys.println("}");
         }
         if (self.stats.blit_sample_count > 0) {
@@ -437,13 +572,69 @@ const App = struct {
     }
 
     fn testApiHeader(self: *App) bool {
-        const ok = self.sys.contractValid() and self.dev.hasFn("performance_summary") and self.dev.hasFn("memory_reclaim_probe") and self.dev.hasFn("memory_reclaim_probe") and self.dev.hasFn("memory_backing_store_probe") and self.dev.hasFn("memory_backing_store_slot_probe") and self.dev.hasFn("memory_pager_gate_probe") and self.dev.hasFn("memory_page_io_probe") and self.dev.hasFn("memory_vm_page_state_probe") and self.dev.hasFn("memory_page_io_probe") and self.dev.hasFn("memory_pressure_snapshot") and self.dev.hasFn("memory_pager_gate_probe") and true and self.dev.hasFn("performance_summary") and true and self.dev.hasFn("performance_summary") and self.dev.hasFn("performance_summary") and self.dev.hasFn("performance_summary") and self.dev.hasFn("performance_summary") and self.dev.hasFn("performance_summary") and self.dev.hasFn("performance_summary") and self.dev.hasFn("performance_summary");
-        self.printCheck("R4DEV performance snapshot v143", ok);
+        const ok = self.sys.contractValid() and
+            self.sys.hasFn("monotonic_clock") and
+            self.dev.hasFn("performance_summary") and
+            self.dev.hasFn("performance_boot_phase_clock") and
+            self.dev.hasFn("performance_irq_timing") and
+            self.dev.hasFn("memory_reclaim_probe") and
+            self.dev.hasFn("memory_backing_store_probe") and
+            self.dev.hasFn("memory_backing_store_slot_probe") and
+            self.dev.hasFn("memory_pager_gate_probe") and
+            self.dev.hasFn("memory_page_io_probe") and
+            self.dev.hasFn("memory_vm_page_state_probe") and
+            self.dev.hasFn("memory_pressure_snapshot");
+        self.printCheck("R4SYS/R4DEV performance clock API", ok);
         if (!ok) return false;
         self.sys.write("  API version=");
         self.sys.printU64(self.sys.tableAbiVersion());
         self.sys.write(" size=");
         self.sys.printU64(self.sys.tableSize());
+        self.sys.println("");
+        return true;
+    }
+
+    fn testMonotonicClock(self: *App) bool {
+        var first: r4os.abi.MonotonicClockInfo = .{};
+        var second: r4os.abi.MonotonicClockInfo = .{};
+        const first_ok = self.queryMonotonicClock(&first);
+        const second_ok = self.queryMonotonicClock(&second);
+        const required_flags = r4os.abi.monotonic_clock_flag_valid |
+            r4os.abi.monotonic_clock_flag_continuous;
+        const contract_ok = first_ok and second_ok and
+            first.version == 1 and
+            first.size >= @sizeOf(r4os.abi.MonotonicClockInfo) and
+            (first.flags & required_flags) == required_flags and
+            first.source != r4os.abi.monotonic_clock_source_unavailable and
+            first.frequency_hz == r4os.abi.monotonic_clock_frequency_hz and
+            first.resolution_ns > 0 and
+            first.source_frequency_hz > 0 and
+            first.event_frequency_numerator > 0 and
+            first.event_frequency_denominator > 0 and
+            first.event_requested_hz > 0 and
+            first.event_effective_hz > 0 and
+            second.generation == first.generation and
+            second.instant_ns >= first.instant_ns;
+        self.printCheck("Monotonic clock contract", contract_ok);
+        if (!contract_ok) return false;
+
+        const high_resolution = (first.flags & r4os.abi.monotonic_clock_flag_high_resolution) != 0;
+        const irq_independent = (first.flags & r4os.abi.monotonic_clock_flag_irq_independent) != 0;
+        const degraded = (first.flags & r4os.abi.monotonic_clock_flag_degraded) != 0;
+        const quality_ok = (high_resolution and irq_independent and !degraded) or degraded;
+        self.printCheck("Monotonic clock quality is explicit", quality_ok);
+        if (!quality_ok) return false;
+
+        self.monotonic_clock = second;
+        self.monotonic_clock_available = true;
+        self.sys.write("  Clock instantNs=");
+        self.sys.printU64(second.instant_ns);
+        self.sys.write(" sourceHz=");
+        self.sys.printU64(second.source_frequency_hz);
+        self.sys.write(" eventRate=");
+        self.sys.printU64(second.event_frequency_numerator);
+        self.sys.write("/");
+        self.sys.printU64(second.event_frequency_denominator);
         self.sys.println("");
         return true;
     }
@@ -1013,6 +1204,51 @@ const App = struct {
         return contract_ok;
     }
 
+    fn testSummaryClock(self: *App, summary: r4os.abi.ProgramPerformanceSummary) bool {
+        var clock: r4os.abi.MonotonicClockInfo = .{};
+        const clock_ok = self.queryMonotonicClock(&clock);
+        const metadata_ok = clock_ok and
+            summary.version == r4os.abi.performance_snapshot_version and
+            summary.version >= 2 and
+            summary.size >= @sizeOf(r4os.abi.ProgramPerformanceSummary) and
+            summary.monotonic_clock_flags == clock.flags and
+            summary.monotonic_clock_source == clock.source and
+            summary.monotonic_clock_generation == clock.generation and
+            summary.monotonic_event_backend == clock.event_backend and
+            summary.monotonic_clock_resolution_ns == clock.resolution_ns and
+            summary.monotonic_source_frequency_hz == clock.source_frequency_hz and
+            summary.monotonic_event_frequency_numerator == clock.event_frequency_numerator and
+            summary.monotonic_event_frequency_denominator == clock.event_frequency_denominator and
+            summary.monotonic_event_requested_hz == clock.event_requested_hz and
+            summary.monotonic_event_effective_hz == clock.event_effective_hz;
+        self.printCheck("Performance summary clock metadata", metadata_ok);
+
+        const boot_available = summary.boot_timing_valid != 0 and summary.boot_total_ns > 0 and summary.boot_now_ns >= summary.boot_total_ns;
+        const boot_explicitly_unavailable = summary.boot_timing_valid == 0 and summary.boot_timing_unavailable_spans > 0;
+        const loader_available = summary.loader_timing_valid_spans > 0;
+        const loader_explicitly_unavailable = summary.loader_timing_valid_spans == 0 and summary.loader_timing_unavailable_spans > 0;
+        const availability_ok = (boot_available or boot_explicitly_unavailable) and
+            (loader_available or loader_explicitly_unavailable) and
+            summary.boot_timing_dropped_spans == 0;
+        self.printCheck("Boot/loader timing availability", availability_ok);
+        if (!metadata_ok or !availability_ok) {
+            self.sys.write("  clock generation=");
+            self.sys.printU64(summary.monotonic_clock_generation);
+            self.sys.write(" boot valid/unavailable/dropped=");
+            self.sys.printU64(summary.boot_timing_valid);
+            self.sys.write("/");
+            self.sys.printU64(summary.boot_timing_unavailable_spans);
+            self.sys.write("/");
+            self.sys.printU64(summary.boot_timing_dropped_spans);
+            self.sys.write(" loader valid/unavailable=");
+            self.sys.printU64(summary.loader_timing_valid_spans);
+            self.sys.write("/");
+            self.sys.printU64(summary.loader_timing_unavailable_spans);
+            self.sys.println("");
+        }
+        return metadata_ok and availability_ok;
+    }
+
     fn burnPreemptionWindow(self: *App) bool {
         if (!self.sys.hasFn("thread_create_handle") or !self.sys.hasFn("thread_handle_join")) return self.failBool("Preemption workload thread API missing");
 
@@ -1351,8 +1587,9 @@ const App = struct {
     }
 
     // Isolierter Blit-Durchsatz-Benchmark. Jede Wiederholung laeuft fuer
-    // eine zeitbasierte Mindestdauer; die Frequenz wurde vor der Schleife
-    // genau einmal mit dem Laufkontext erfasst.
+    // eine zeitbasierte Mindestdauer. Der periodische Event-Takt beendet
+    // die Schleife; die Durchsatzzeit kommt, wenn verfuegbar, aus der
+    // backendstabilen Nanosekundenuhr.
     fn probeBlitThroughput(self: *App) bool {
         if (!self.dev.hasFn("display_summary")) return false;
         const width: u32 = 320;
@@ -1362,7 +1599,7 @@ const App = struct {
         while (i < pixel_count) : (i += 1) {
             blit_bench_frame[i] = 0xFF000000 | @as(u32, @intCast((i * 7) & 0xFFFFFF));
         }
-        const frequency = self.time_state.monotonic_hz;
+        const frequency = self.eventHz();
         const min_ticks = measurement.ticksForMilliseconds(frequency, measurement.blit_min_duration_ms);
         if (min_ticks == 0) return false;
 
@@ -1371,6 +1608,8 @@ const App = struct {
         var sample_index: usize = 0;
         while (sample_index < self.config.repetitions) : (sample_index += 1) {
             var iterations: u64 = 0;
+            var clock_start: r4os.abi.MonotonicClockInfo = .{};
+            const clock_sample_available = self.queryMonotonicClock(&clock_start);
             const start = self.sys.ticks();
             var elapsed: u64 = 0;
             while (iterations < max_iters) {
@@ -1384,12 +1623,26 @@ const App = struct {
             }
             if (elapsed < min_ticks or elapsed == 0) return false;
 
+            var elapsed_ns: u64 = 0;
+            if (clock_sample_available) {
+                var clock_end: r4os.abi.MonotonicClockInfo = .{};
+                if (!self.queryMonotonicClock(&clock_end) or
+                    clock_end.generation != clock_start.generation or
+                    clock_end.instant_ns < clock_start.instant_ns) return false;
+                elapsed_ns = clock_end.instant_ns - clock_start.instant_ns;
+                if (elapsed_ns == 0) return false;
+            }
+
             const bytes_total = iterations * @as(u64, pixel_count) * 4;
             self.stats.blit_samples[sample_index] = .{
                 .iterations = iterations,
                 .elapsed_ticks = elapsed,
+                .elapsed_ns = elapsed_ns,
                 .bytes = bytes_total,
-                .kb_per_second = measurement.throughputKbPerSecond(bytes_total, elapsed, frequency),
+                .kb_per_second = if (elapsed_ns > 0)
+                    measurement.throughputKbPerSecondNs(bytes_total, elapsed_ns)
+                else
+                    measurement.throughputKbPerSecond(bytes_total, elapsed, frequency),
             };
             self.stats.blit_sample_count += 1;
         }
@@ -1408,6 +1661,8 @@ const App = struct {
             self.sys.printU64(sample.iterations);
             self.sys.write(" ticks=");
             self.sys.printU64(sample.elapsed_ticks);
+            self.sys.write(" ns=");
+            self.sys.printU64(sample.elapsed_ns);
             self.sys.write(" bytes=");
             self.sys.printU64(sample.bytes);
             self.sys.write(" KB/s=");
@@ -1432,6 +1687,90 @@ const App = struct {
         self.sys.write(" mean=");
         self.sys.printU64(distribution.mean);
         self.sys.println(" (1 MB = 1024 KB)");
+    }
+
+    fn probeMonotonicClock(self: *App) bool {
+        if (!self.sys.hasFn("monotonic_clock")) return false;
+        self.stats.clock_sample_count = 0;
+        var sample_index: usize = 0;
+        while (sample_index < self.config.repetitions) : (sample_index += 1) {
+            var first: r4os.abi.MonotonicClockInfo = .{};
+            if (self.sys.monotonicClock(&first) <= 0 or
+                (first.flags & r4os.abi.monotonic_clock_flag_valid) == 0) return false;
+
+            var previous = first.instant_ns;
+            var min_positive_delta: u64 = 0;
+            var zero_deltas: u64 = 0;
+            var regressions: u64 = 0;
+            var calls: u64 = 0;
+            while (calls < measurement.clock_calls_per_sample) : (calls += 1) {
+                var current: r4os.abi.MonotonicClockInfo = .{};
+                if (self.sys.monotonicClock(&current) <= 0 or current.generation != first.generation) return false;
+                if (current.instant_ns < previous) {
+                    regressions +%= 1;
+                } else {
+                    const sample_delta = current.instant_ns - previous;
+                    if (sample_delta == 0) {
+                        zero_deltas +%= 1;
+                    } else if (min_positive_delta == 0 or sample_delta < min_positive_delta) {
+                        min_positive_delta = sample_delta;
+                    }
+                }
+                previous = current.instant_ns;
+            }
+            if (regressions != 0 or previous <= first.instant_ns or min_positive_delta == 0) return false;
+            const elapsed_ns = previous - first.instant_ns;
+            self.stats.clock_samples[sample_index] = .{
+                .calls = calls,
+                .elapsed_ns = elapsed_ns,
+                .ns_per_call = elapsed_ns / calls,
+                .min_positive_delta_ns = min_positive_delta,
+                .zero_deltas = zero_deltas,
+                .regressions = regressions,
+            };
+            self.stats.clock_sample_count += 1;
+        }
+        return self.stats.clock_sample_count == self.config.repetitions;
+    }
+
+    fn printClockResults(self: *App) void {
+        var costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.clock_sample_count) : (index += 1) {
+            const sample = self.stats.clock_samples[index];
+            costs[index] = sample.ns_per_call;
+            self.sys.write("  Clock sample ");
+            self.sys.printU64(index + 1);
+            self.sys.write(": calls=");
+            self.sys.printU64(sample.calls);
+            self.sys.write(" elapsedNs=");
+            self.sys.printU64(sample.elapsed_ns);
+            self.sys.write(" ns/call=");
+            self.sys.printU64(sample.ns_per_call);
+            self.sys.write(" minDeltaNs=");
+            self.sys.printU64(sample.min_positive_delta_ns);
+            self.sys.write(" zero=");
+            self.sys.printU64(sample.zero_deltas);
+            self.sys.write(" regressions=");
+            self.sys.printU64(sample.regressions);
+            self.sys.println("");
+        }
+        const distribution = measurement.summarize(costs[0..self.stats.clock_sample_count]);
+        self.sys.write("  Clock distribution ns/call: n=");
+        self.sys.printU64(distribution.count);
+        self.sys.write(" min=");
+        self.sys.printU64(distribution.minimum);
+        self.sys.write(" p50=");
+        self.sys.printU64(distribution.p50);
+        self.sys.write(" p95=");
+        self.sys.printU64(distribution.p95);
+        self.sys.write(" p99=");
+        self.sys.printU64(distribution.p99);
+        self.sys.write(" max=");
+        self.sys.printU64(distribution.maximum);
+        self.sys.write(" mean=");
+        self.sys.printU64(distribution.mean);
+        self.sys.println("");
     }
 
     fn probeAudioLatency(self: *App) bool {
@@ -1661,19 +2000,119 @@ const App = struct {
     fn testBootPhases(self: *App, summary: r4os.abi.ProgramPerformanceSummary) bool {
         var saw_runtime = false;
         var checked: u32 = 0;
+        var clock_available: u32 = 0;
+        var clock_unavailable: u32 = 0;
+        var shape_ok = true;
         var i: u32 = 0;
         while (i < summary.boot_phase_count) : (i += 1) {
             const phase = self.dev.performanceBootPhase(i) orelse return self.failBool("Boot phase performance entry unavailable");
+            const clock = self.dev.performanceBootPhaseClock(i) orelse return self.failBool("Boot phase clock entry unavailable");
             checked += 1;
             if (phase.phase == 13) saw_runtime = true;
-            if (i < 12) self.printBootPhase(phase);
+            const valid = (clock.clock_flags & r4os.abi.monotonic_clock_flag_valid) != 0;
+            if (valid) {
+                clock_available += 1;
+                shape_ok = shape_ok and clock.last_ns >= clock.first_ns;
+            } else {
+                clock_unavailable += 1;
+                shape_ok = shape_ok and clock.unavailable_spans > 0;
+            }
+            shape_ok = shape_ok and
+                clock.version == 1 and
+                clock.size >= @sizeOf(r4os.abi.ProgramBootPhaseClockInfo) and
+                clock.index == i and
+                clock.phase == phase.phase and
+                clock.transitions == phase.transitions;
+            if (i < 12) {
+                self.printBootPhase(phase);
+                self.printBootPhaseClock(clock);
+            }
         }
-        const ok = checked > 0 and saw_runtime;
+        const ok = checked > 0 and saw_runtime and shape_ok and
+            clock_available + clock_unavailable == checked and
+            clock_available > 0;
         self.printCheck("Boot phase conformance", ok);
         return ok;
     }
 
+    fn testIrqTiming(self: *App) bool {
+        const required_coverage = r4os.abi.performance_irq_coverage_dispatch |
+            r4os.abi.performance_irq_coverage_external_handler |
+            r4os.abi.performance_irq_coverage_delivery_unavailable;
+        var checked: u32 = 0;
+        var registered: u32 = 0;
+        var measured: u32 = 0;
+        var ok = true;
+        var irq: u32 = 0;
+        while (irq < 32) : (irq += 1) {
+            const info = self.dev.performanceIrqTiming(irq) orelse return self.failBool("IRQ timing entry unavailable");
+            checked += 1;
+            ok = ok and
+                info.version == 1 and
+                info.size >= @sizeOf(r4os.abi.ProgramIrqTimingInfo) and
+                info.irq == irq and
+                (info.coverage_flags & required_coverage) == required_coverage and
+                info.delivery_samples == 0 and
+                info.dispatch_max_ns >= info.dispatch_last_ns and
+                info.dispatch_total_ns >= info.dispatch_last_ns and
+                info.handler_max_ns >= info.handler_last_ns and
+                info.handler_total_ns >= info.handler_last_ns;
+            if (info.registered != 0) {
+                registered += 1;
+                if (info.dispatch_samples > 0) measured += 1;
+                const minimum_reads = 2 *% (info.dispatch_samples +% info.handler_samples);
+                ok = ok and info.observer_reads >= minimum_reads;
+            }
+            const high_resolution = (info.clock_flags & r4os.abi.monotonic_clock_flag_high_resolution) != 0;
+            if (high_resolution) {
+                ok = ok and (info.coverage_flags & r4os.abi.performance_irq_coverage_irq_safe_clock) != 0;
+            }
+        }
+        ok = ok and checked == 32 and registered > 0 and measured > 0;
+        self.printCheck("IRQ high-resolution timing coverage", ok);
+        if (!ok) {
+            self.sys.write("  IRQ timing checked/registered/measured=");
+            self.sys.printU64(checked);
+            self.sys.write("/");
+            self.sys.printU64(registered);
+            self.sys.write("/");
+            self.sys.printU64(measured);
+            self.sys.println("");
+        }
+        return ok;
+    }
+
     fn printBaseline(self: *App, summary: r4os.abi.ProgramPerformanceSummary) void {
+        self.sys.write("  Clock: source=");
+        self.sys.write(clockSourceName(summary.monotonic_clock_source));
+        self.sys.write(" generation=");
+        self.sys.printU64(summary.monotonic_clock_generation);
+        self.sys.write(" resolutionNs=");
+        self.sys.printU64(summary.monotonic_clock_resolution_ns);
+        self.sys.write(" event=");
+        self.sys.write(timeBackendName(summary.monotonic_event_backend));
+        self.sys.write(" rate=");
+        self.sys.printU64(summary.monotonic_event_frequency_numerator);
+        self.sys.write("/");
+        self.sys.printU64(summary.monotonic_event_frequency_denominator);
+        self.sys.println("");
+
+        self.sys.write("  Boot/loader ns: boot=");
+        self.sys.printU64(summary.boot_total_ns);
+        self.sys.write(" valid/unavailable/dropped=");
+        self.sys.printU64(summary.boot_timing_valid);
+        self.sys.write("/");
+        self.sys.printU64(summary.boot_timing_unavailable_spans);
+        self.sys.write("/");
+        self.sys.printU64(summary.boot_timing_dropped_spans);
+        self.sys.write(" loader=");
+        self.sys.printU64(summary.loader_total_ns);
+        self.sys.write(" spans=");
+        self.sys.printU64(summary.loader_timing_valid_spans);
+        self.sys.write("/");
+        self.sys.printU64(summary.loader_timing_unavailable_spans);
+        self.sys.println("");
+
         self.sys.write("  Scheduler: ticks=");
         self.sys.printU64(summary.ticks);
         self.sys.write(" hz=");
@@ -2378,6 +2817,21 @@ const App = struct {
         self.sys.printU64(phase.total_ticks);
         self.sys.write(" transitions=");
         self.sys.printU64(phase.transitions);
+        self.sys.println("");
+    }
+
+    fn printBootPhaseClock(self: *App, phase: r4os.abi.ProgramBootPhaseClockInfo) void {
+        self.sys.write("    clockNs=");
+        if ((phase.clock_flags & r4os.abi.monotonic_clock_flag_valid) != 0) {
+            self.sys.printU64(phase.total_ns);
+            self.sys.write(" first/last=");
+            self.sys.printU64(phase.first_ns);
+            self.sys.write("/");
+            self.sys.printU64(phase.last_ns);
+        } else {
+            self.sys.write("unavailable spans=");
+            self.sys.printU64(phase.unavailable_spans);
+        }
         self.sys.println("");
     }
 
@@ -3973,6 +4427,16 @@ fn timeBackendName(value: u32) []const u8 {
         0 => "pit",
         1 => "hpet",
         2 => "lapic",
+        else => "unknown",
+    };
+}
+
+fn clockSourceName(value: u32) []const u8 {
+    return switch (value) {
+        r4os.abi.monotonic_clock_source_unavailable => "unavailable",
+        r4os.abi.monotonic_clock_source_tsc => "tsc",
+        r4os.abi.monotonic_clock_source_hpet => "hpet",
+        r4os.abi.monotonic_clock_source_periodic_event => "periodic-event",
         else => "unknown",
     };
 }

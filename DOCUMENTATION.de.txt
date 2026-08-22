@@ -11,6 +11,10 @@ PERFDIAG trennt passive Aufnahme, Vertragskonformitaet und Benchmark:
 - /BENCHMARK /BLIT fuehrt ausschliesslich den wiederholten 320x64-XRGB-
   Blitlauf aus. /REPEAT:3 bis /REPEAT:20 legt die Wiederholungen fest;
   /COLD oder /WARM dokumentiert den vom Aufrufer hergestellten Zustand.
+- /BENCHMARK /CLOCK misst ausschliesslich die Kosten und den Fortschritt der
+  hochaufloesenden monotonen R4SYS-Uhr. Jede Wiederholung umfasst 10000
+  Abfragen und meldet verstrichene Nanosekunden, Nanosekunden je Aufruf,
+  kleinsten positiven Abstand, Null-Deltas und Rueckschritte.
 
 Der Konformitaetsmodus prueft den aktuellen R4DEV-Performancevertrag und
 fachliche Subsystemwerte:
@@ -19,6 +23,7 @@ fachliche Subsystemwerte:
 - Driver-Workqueue und Storage-Completions
 - Memory-Pressure, Reclaim, Backing Store und Page-I/O
 - Audio-Latenz und Streamfortschritt
+- monotone Clockmetadaten, Boot-/Loader-Nanosekunden und IRQ-Zeitabdeckung
 - Loader-/R4P-Lifecycle und Hot-Path-Indizes
 - Loader-Dateipuffer und Speichergrenzen
 
@@ -27,16 +32,20 @@ Konsistenzinvarianten. Historische Exaktzustands-Aggregate bleiben als
 Beobachtung sichtbar, gelten bei gueltigem asynchronem Subsystemzustand aber
 nicht als Vertragsfehler.
 
-Die monotone Frequenz wird pro Lauf einmal erfasst. Der Blit-Durchsatz nutzt
-eine Mindestdauer von 250 ms und meldet fuer jede Wiederholung Bytes, Ticks
-und KB/s; dabei gilt 1 MB = 1024 KB. Min, p50, p95, p99, Maximum und Mittel
-bleiben getrennt sichtbar, so dass auch kleine reproduzierbare Verbesserungen
-bewertet werden koennen.
+Die neue Clockinformation wird ohne RTC-/CMOS-Zugriff erfasst und weist
+Quelle, Generation, Aufloesung, wirksame rationale Ereignisrate sowie einen
+explizit degradierten Fallback aus. Der Blit-Durchsatz nutzt bevorzugt
+verstrichene Nanosekunden und faellt fuer aeltere Kernel auf die einmalig
+erfasste Ereignisfrequenz zurueck. Er meldet fuer jede Wiederholung Bytes,
+Zeit und KB/s; dabei gilt 1 MB = 1024 KB. Clock- und Blitbenchmark geben Min,
+p50, p95, p99, Maximum und Mittel aus, so dass auch kleine reproduzierbare
+Verbesserungen bewertet werden koennen.
 
 Die menschenlesbare Ausgabe endet mit einem abgegrenzten, versionierten
-NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 1. Er enthaelt Modus,
-Modul-, Kernel- und API-Version, Timerbackend und Frequenz, Kalt-/Warmstatus,
-Wiederholungen, Rohwerte, Einheiten, Checks, fehlende Messklassen und die
-beobachteten Eigenkosten aller PerformanceSummary-Abfragen. Abfragen werden
-nicht in heissen Messschleifen ausgefuehrt. Benoetigte optionale Felder werden
-weiterhin mit hasFn geprueft.
+NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 2. Er enthaelt Modus,
+Modul-, Kernel- und API-Version, Clockquelle und -qualitaet, Ereignisbackend
+und rationale Rate, Kalt-/Warmstatus, Wiederholungen, Rohwerte, Einheiten,
+Checks, fehlende Messklassen und die beobachteten Eigenkosten aller
+PerformanceSummary-Abfragen. Abfragen werden nicht in heissen Messschleifen
+ausgefuehrt. Benoetigte optionale Felder werden weiterhin mit hasFn geprueft;
+ein aelterer Kernel bleibt ueber den bisherigen TimeState-Fallback lesbar.
