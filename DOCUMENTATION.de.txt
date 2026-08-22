@@ -1,8 +1,19 @@
 ﻿PERFDIAG.R4X
 ==============
 
-PERFDIAG prueft den aktuellen R4DEV-Performancevertrag und fachliche
-Subsystemwerte:
+PERFDIAG trennt passive Aufnahme, Vertragskonformitaet und Benchmark:
+
+- Ohne Argumente beziehungsweise mit /BASELINE wird vor jeder optionalen
+  Arbeitslast genau eine passive PerformanceSummary aufgenommen.
+- /CONFORMANCE fuehrt die zustandsveraendernden Vertragsprobes aus. Ein
+  bestandenes Ergebnis belegt Fortschritt und Konsistenz, aber keine
+  Performancegrenze.
+- /BENCHMARK /BLIT fuehrt ausschliesslich den wiederholten 320x64-XRGB-
+  Blitlauf aus. /REPEAT:3 bis /REPEAT:20 legt die Wiederholungen fest;
+  /COLD oder /WARM dokumentiert den vom Aufrufer hergestellten Zustand.
+
+Der Konformitaetsmodus prueft den aktuellen R4DEV-Performancevertrag und
+fachliche Subsystemwerte:
 
 - Scheduler, Preemption, Wait-/Queue-Latenzen und SIMD-State
 - Driver-Workqueue und Storage-Completions
@@ -11,5 +22,21 @@ Subsystemwerte:
 - Loader-/R4P-Lifecycle und Hot-Path-Indizes
 - Loader-Dateipuffer und Speichergrenzen
 
-Die Ausgabe besteht aus aktuellen Snapshots und expliziten Result-Markern.
-Benoetigte optionale Felder werden mit hasFn geprueft.
+Als Abnahmezaun dienen stabile ABI-, Kapazitaets-, Fehler- und
+Konsistenzinvarianten. Historische Exaktzustands-Aggregate bleiben als
+Beobachtung sichtbar, gelten bei gueltigem asynchronem Subsystemzustand aber
+nicht als Vertragsfehler.
+
+Die monotone Frequenz wird pro Lauf einmal erfasst. Der Blit-Durchsatz nutzt
+eine Mindestdauer von 250 ms und meldet fuer jede Wiederholung Bytes, Ticks
+und KB/s; dabei gilt 1 MB = 1024 KB. Min, p50, p95, p99, Maximum und Mittel
+bleiben getrennt sichtbar, so dass auch kleine reproduzierbare Verbesserungen
+bewertet werden koennen.
+
+Die menschenlesbare Ausgabe endet mit einem abgegrenzten, versionierten
+NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 1. Er enthaelt Modus,
+Modul-, Kernel- und API-Version, Timerbackend und Frequenz, Kalt-/Warmstatus,
+Wiederholungen, Rohwerte, Einheiten, Checks, fehlende Messklassen und die
+beobachteten Eigenkosten aller PerformanceSummary-Abfragen. Abfragen werden
+nicht in heissen Messschleifen ausgefuehrt. Benoetigte optionale Felder werden
+weiterhin mit hasFn geprueft.

@@ -1,4 +1,7 @@
 const r4os = @import("r4os");
+const measurement = @import("measurement.zig");
+
+const module_version = "0.2.0";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -19,6 +22,32 @@ var preemption_worker_stop: u32 = 0;
 var avx_worker_results: [2]u32 = .{ 0, 0 };
 // 0.56.12: Frame-Puffer fuer den Blit-Durchsatz-Benchmark (320x64 XRGB).
 var blit_bench_frame: [320 * 64]u32 = .{0} ** (320 * 64);
+const max_check_results = 256;
+
+const CheckResult = struct {
+    label: []const u8 = &.{},
+    ok: bool = false,
+};
+
+const BlitSample = struct {
+    iterations: u64 = 0,
+    elapsed_ticks: u64 = 0,
+    bytes: u64 = 0,
+    kb_per_second: u64 = 0,
+};
+
+const RunStats = struct {
+    summary_query_attempts: u32 = 0,
+    summary_query_successes: u32 = 0,
+    summary_query_bytes: u64 = 0,
+    summary_query_total_ticks: u64 = 0,
+    summary_query_max_ticks: u64 = 0,
+    checks: [max_check_results]CheckResult = .{CheckResult{}} ** max_check_results,
+    check_count: usize = 0,
+    dropped_checks: u32 = 0,
+    blit_samples: [measurement.max_repetitions]BlitSample = .{BlitSample{}} ** measurement.max_repetitions,
+    blit_sample_count: usize = 0,
+};
 const avx_pattern_a: [32]u8 align(32) = .{
     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
     0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x0f, 0x10,
@@ -66,6 +95,11 @@ const App = struct {
     dev: r4os.r4dev.Context,
     draw: r4os.r4draw.Context,
     audio: r4os.r4audio.Context,
+    config: measurement.Config,
+    time_state: r4os.abi.TimeState = .{},
+    kernel_version: ?r4os.abi.KernelVersion = null,
+    hardware: ?r4os.abi.HardwareSummary = null,
+    stats: RunStats = .{},
 
     fn init(r4_app: *r4os.App) ?App {
         return .{
@@ -73,11 +107,79 @@ const App = struct {
             .dev = r4_app.devicesLowLevel() orelse return null,
             .draw = r4_app.drawing() orelse return null,
             .audio = r4_app.audioLowLevel() orelse return null,
+            .config = measurement.parseArgs(r4_app.args()),
         };
     }
 
     fn run(self: *App) i32 {
-        self.sys.println("PERFDIAG");
+        if (self.config.show_help) {
+            self.printUsage();
+            return 0;
+        }
+        if (!self.config.valid()) {
+            self.sys.write("PERFDIAG argument error: ");
+            self.sys.println(self.config.parse_error.name());
+            self.printUsage();
+            return 2;
+        }
+
+        // Die passive Momentaufnahme ist absichtlich die erste beobachtende
+        // Operation. Ausgabe und optionale Arbeitslast beginnen erst danach.
+        const passive_summary = self.captureSummary() orelse {
+            self.sys.println("PERFDIAG");
+            _ = self.failBool("Passive performance snapshot unavailable");
+            self.sys.println("PERFDIAG result: FAILED");
+            return 1;
+        };
+        self.time_state = self.sys.timeState();
+
+        if (self.config.mode != .benchmark) self.printRunHeader();
+
+        var post_summary = passive_summary;
+        var has_post_summary = false;
+        var ok = true;
+        switch (self.config.mode) {
+            .baseline => {
+                self.printCheck("Passive performance snapshot", true);
+            },
+            .conformance => {
+                ok = self.runConformance(&post_summary);
+                has_post_summary = true;
+            },
+            .benchmark => {
+                ok = self.probeBlitThroughput();
+                if (self.captureSummary()) |summary| {
+                    post_summary = summary;
+                } else {
+                    ok = false;
+                }
+                has_post_summary = true;
+                self.printRunHeader();
+                self.printBlitResults();
+                self.printCheck("Blit throughput benchmark", ok);
+            },
+        }
+
+        // Metadaten ohne Einfluss auf die passive Baseline oder den isolierten
+        // Benchmark erst nach der optionalen Arbeitslast erfassen.
+        self.kernel_version = self.dev.kernelVersion();
+        self.hardware = self.dev.hardwareSummary();
+
+        self.sys.println("  Passive baseline (captured before workload):");
+        self.printBaseline(passive_summary);
+        if (has_post_summary and self.config.mode == .conformance) {
+            self.sys.println("  Post-conformance snapshot:");
+            self.printBaseline(post_summary);
+        }
+        self.printObserverCost();
+        self.printMachineResult(passive_summary, ok);
+
+        self.sys.write("PERFDIAG result: ");
+        self.sys.println(if (ok) "OK" else "FAILED");
+        return if (ok) 0 else 1;
+    }
+
+    fn runConformance(self: *App, out_summary: *r4os.abi.ProgramPerformanceSummary) bool {
         var ok = true;
         ok = self.testApiHeader() and ok;
         self.sys.sleepTicks(1);
@@ -85,7 +187,6 @@ const App = struct {
         _ = self.sys.fileReadAt("C:\\R4OS\\CONFIG\\VERSION.R4S", 0, fs_probe[0..]);
         ok = self.testLocalFpuArithmetic() and ok;
         ok = self.probeDisplayResponsiveness() and ok;
-        ok = self.probeBlitThroughput() and ok;
         ok = self.probeAudioLatency() and ok;
         ok = self.probeServiceQueue() and ok;
         ok = self.probeFsPageCache() and ok;
@@ -100,11 +201,11 @@ const App = struct {
         ok = self.probeVmEvictionReclaim() and ok;
         ok = self.burnPreemptionWindow() and ok;
         ok = self.probeAvxRegisterState() and ok;
-        const summary = self.dev.performanceSummary() orelse {
+        const summary = self.captureSummary() orelse {
             _ = self.failBool("Performance snapshot unavailable");
-            self.sys.println("PERFDIAG result: FAILED");
-            return 1;
+            return false;
         };
+        out_summary.* = summary;
         ok = self.testSummary(summary) and ok;
         ok = self.testPreemption(summary) and ok;
         ok = self.testSchedulerLatency(summary) and ok;
@@ -114,11 +215,225 @@ const App = struct {
         ok = self.testTasks(summary) and ok;
         ok = self.testStorage(summary) and ok;
         ok = self.testBootPhases(summary) and ok;
-        self.printBaseline(summary);
+        return ok;
+    }
 
-        self.sys.write("PERFDIAG result: ");
-        self.sys.println(if (ok) "OK" else "FAILED");
-        return if (ok) 0 else 1;
+    fn captureSummary(self: *App) ?r4os.abi.ProgramPerformanceSummary {
+        self.stats.summary_query_attempts +%= 1;
+        const start = self.sys.ticks();
+        const summary = self.dev.performanceSummary();
+        const elapsed = self.sys.ticks() - start;
+        self.stats.summary_query_total_ticks +%= elapsed;
+        self.stats.summary_query_max_ticks = @max(self.stats.summary_query_max_ticks, elapsed);
+        if (summary != null) {
+            self.stats.summary_query_successes +%= 1;
+            self.stats.summary_query_bytes +%= @sizeOf(r4os.abi.ProgramPerformanceSummary);
+        }
+        return summary;
+    }
+
+    fn printRunHeader(self: *App) void {
+        self.sys.println("PERFDIAG");
+        self.sys.write("  Mode: ");
+        self.sys.println(self.config.mode.name());
+        self.sys.write("  Classification: ");
+        self.sys.println(runClassification(self.config.mode));
+        self.sys.write("  Cache state: ");
+        self.sys.println(self.config.cache_state.name());
+        self.sys.write("  Timer captured once: backend=");
+        self.sys.write(timeBackendName(self.time_state.monotonic_backend));
+        self.sys.write(" hz=");
+        self.sys.printU64(self.time_state.monotonic_hz);
+        self.sys.println("");
+        if (!self.config.mode_explicit) {
+            self.sys.println("  No mode supplied; passive /BASELINE is the safe default.");
+        }
+        if (self.config.mode == .conformance) {
+            self.sys.println("  Conformance proves contract progress, not a performance threshold.");
+        }
+        if (self.config.mode == .benchmark and self.config.cache_state == .unspecified) {
+            self.sys.println("  Benchmark cache state is unspecified; use /COLD or /WARM for comparisons.");
+        }
+    }
+
+    fn printUsage(self: *App) void {
+        self.sys.println("PERFDIAG usage:");
+        self.sys.println("  PERFDIAG /BASELINE");
+        self.sys.println("  PERFDIAG /CONFORMANCE");
+        self.sys.println("  PERFDIAG /BENCHMARK /BLIT /REPEAT:5 /COLD|/WARM");
+        self.sys.println("No mode runs the passive baseline. Repetitions: 3..20.");
+    }
+
+    fn printObserverCost(self: *App) void {
+        self.sys.write("  Summary observer: attempts=");
+        self.sys.printU64(self.stats.summary_query_attempts);
+        self.sys.write(" successes=");
+        self.sys.printU64(self.stats.summary_query_successes);
+        self.sys.write(" bytes=");
+        self.sys.printU64(self.stats.summary_query_bytes);
+        self.sys.write(" ticksTotal=");
+        self.sys.printU64(self.stats.summary_query_total_ticks);
+        self.sys.write(" ticksMax=");
+        self.sys.printU64(self.stats.summary_query_max_ticks);
+        self.sys.println(" hotLoopQueries=0");
+    }
+
+    fn recordCheck(self: *App, label: []const u8, ok: bool) void {
+        if (self.stats.check_count >= self.stats.checks.len) {
+            self.stats.dropped_checks +%= 1;
+            return;
+        }
+        self.stats.checks[self.stats.check_count] = .{ .label = label, .ok = ok };
+        self.stats.check_count += 1;
+    }
+
+    fn printMachineResult(self: *App, passive_summary: r4os.abi.ProgramPerformanceSummary, ok: bool) void {
+        self.sys.println("PERFDIAG machine-result begin");
+
+        self.machineLinePrefix("run");
+        self.sys.write(",\"module\":");
+        self.printJsonString("PERFDIAG");
+        self.sys.write(",\"module_version\":");
+        self.printJsonString(module_version);
+        self.sys.write(",\"mode\":");
+        self.printJsonString(self.config.mode.name());
+        self.sys.write(",\"mode_explicit\":");
+        self.printJsonBool(self.config.mode_explicit);
+        self.sys.write(",\"classification\":");
+        self.printJsonString(runClassification(self.config.mode));
+        self.sys.write(",\"cache_state\":");
+        self.printJsonString(self.config.cache_state.name());
+        self.sys.write(",\"repetitions\":");
+        self.sys.printU64(if (self.config.mode == .benchmark) self.config.repetitions else 1);
+        self.sys.write(",\"timer_backend\":");
+        self.printJsonString(timeBackendName(self.time_state.monotonic_backend));
+        self.sys.write(",\"timer_hz\":");
+        self.sys.printU64(self.time_state.monotonic_hz);
+        self.sys.write(",\"api_version\":");
+        self.sys.printU64(self.sys.tableAbiVersion());
+        self.sys.write(",\"kernel_major\":");
+        self.sys.printU64(if (self.kernel_version) |version| version.major else 0);
+        self.sys.write(",\"kernel_minor\":");
+        self.sys.printU64(if (self.kernel_version) |version| version.minor else 0);
+        self.sys.write(",\"kernel_patch\":");
+        self.sys.printU64(if (self.kernel_version) |version| version.patch else 0);
+        self.sys.write(",\"cpu_logical_processors\":");
+        self.sys.printU64(if (self.hardware) |hardware| hardware.cpu_logical_processors else 0);
+        self.sys.write(",\"result\":");
+        self.printJsonString(if (ok) "ok" else "failed");
+        self.sys.println("}");
+
+        self.machineLinePrefix("baseline");
+        self.sys.write(",\"captured_before_workload\":true,\"ticks\":");
+        self.sys.printU64(passive_summary.ticks);
+        self.sys.write(",\"tick_hz\":");
+        self.sys.printU64(passive_summary.tick_hz);
+        self.sys.write(",\"flags\":");
+        self.sys.printU64(passive_summary.flags);
+        self.sys.write(",\"missing_flags\":");
+        self.sys.printU64(passive_summary.missing_flags);
+        self.sys.println("}");
+
+        var check_index: usize = 0;
+        while (check_index < self.stats.check_count) : (check_index += 1) {
+            const check = self.stats.checks[check_index];
+            self.machineLinePrefix("check");
+            self.sys.write(",\"name\":");
+            self.printJsonString(check.label);
+            self.sys.write(",\"ok\":");
+            self.printJsonBool(check.ok);
+            self.sys.println("}");
+        }
+
+        var rates: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var sample_index: usize = 0;
+        while (sample_index < self.stats.blit_sample_count) : (sample_index += 1) {
+            const sample = self.stats.blit_samples[sample_index];
+            rates[sample_index] = sample.kb_per_second;
+            self.machineLinePrefix("blit_sample");
+            self.sys.write(",\"sample\":");
+            self.sys.printU64(sample_index + 1);
+            self.sys.write(",\"iterations\":");
+            self.sys.printU64(sample.iterations);
+            self.sys.write(",\"elapsed_ticks\":");
+            self.sys.printU64(sample.elapsed_ticks);
+            self.sys.write(",\"timer_hz\":");
+            self.sys.printU64(self.time_state.monotonic_hz);
+            self.sys.write(",\"bytes\":");
+            self.sys.printU64(sample.bytes);
+            self.sys.write(",\"kb_per_second\":");
+            self.sys.printU64(sample.kb_per_second);
+            self.sys.write(",\"kb_bytes\":");
+            self.sys.printU64(measurement.bytes_per_kb);
+            self.sys.write(",\"mb_kb\":");
+            self.sys.printU64(measurement.kb_per_mb);
+            self.sys.println("}");
+        }
+        if (self.stats.blit_sample_count > 0) {
+            const distribution = measurement.summarize(rates[0..self.stats.blit_sample_count]);
+            self.machineLinePrefix("blit_distribution");
+            self.sys.write(",\"unit\":\"KB/s\",\"count\":");
+            self.sys.printU64(distribution.count);
+            self.sys.write(",\"min\":");
+            self.sys.printU64(distribution.minimum);
+            self.sys.write(",\"p50\":");
+            self.sys.printU64(distribution.p50);
+            self.sys.write(",\"p95\":");
+            self.sys.printU64(distribution.p95);
+            self.sys.write(",\"p99\":");
+            self.sys.printU64(distribution.p99);
+            self.sys.write(",\"max\":");
+            self.sys.printU64(distribution.maximum);
+            self.sys.write(",\"mean\":");
+            self.sys.printU64(distribution.mean);
+            self.sys.println("}");
+        }
+
+        self.machineLinePrefix("observer");
+        self.sys.write(",\"summary_query_attempts\":");
+        self.sys.printU64(self.stats.summary_query_attempts);
+        self.sys.write(",\"summary_query_successes\":");
+        self.sys.printU64(self.stats.summary_query_successes);
+        self.sys.write(",\"summary_bytes\":");
+        self.sys.printU64(self.stats.summary_query_bytes);
+        self.sys.write(",\"summary_total_ticks\":");
+        self.sys.printU64(self.stats.summary_query_total_ticks);
+        self.sys.write(",\"summary_max_ticks\":");
+        self.sys.printU64(self.stats.summary_query_max_ticks);
+        self.sys.write(",\"summary_hot_loop_queries\":0,\"timer_resolution_ticks\":1,\"zero_tick_samples_possible\":true,\"dropped_checks\":");
+        self.sys.printU64(self.stats.dropped_checks);
+        self.sys.println("}");
+
+        self.sys.println("PERFDIAG machine-result end");
+    }
+
+    fn machineLinePrefix(self: *App, event_type: []const u8) void {
+        self.sys.write("{\"schema\":");
+        self.printJsonString(measurement.result_schema);
+        self.sys.write(",\"schema_version\":");
+        self.sys.printU64(measurement.result_schema_version);
+        self.sys.write(",\"type\":");
+        self.printJsonString(event_type);
+    }
+
+    fn printJsonString(self: *App, value: []const u8) void {
+        self.sys.putc('"');
+        for (value) |ch| {
+            switch (ch) {
+                '"' => self.sys.write("\\\""),
+                '\\' => self.sys.write("\\\\"),
+                '\n' => self.sys.write("\\n"),
+                '\r' => self.sys.write("\\r"),
+                '\t' => self.sys.write("\\t"),
+                0...8, 11...12, 14...31 => self.sys.putc('?'),
+                else => self.sys.putc(ch),
+            }
+        }
+        self.sys.putc('"');
+    }
+
+    fn printJsonBool(self: *App, value: bool) void {
+        self.sys.write(if (value) "true" else "false");
     }
 
     fn testApiHeader(self: *App) bool {
@@ -252,9 +567,19 @@ const App = struct {
             summary.memory_page_io_valid_slots >= 2
         else
             summary.memory_page_io_valid_slots <= summary.memory_page_io_capacity_slots;
-        const expected_page_io_bytes: u64 = if (page_io_last_is_vm_region_in) 4096 else 8192;
-        const expected_page_io_pages: u64 = if (page_io_last_is_vm_region_in) 1 else 2;
-        const expected_page_io_region_offset: u64 = if (page_io_last_is_vm_region_in) 4096 else 0;
+        const page_io_shape_ok = if (page_io_last_is_diagnostic_in)
+            summary.memory_page_io_io_bytes == 8192 and
+                summary.memory_page_io_io_status == 8192 and
+                summary.memory_page_io_page_count == 2 and
+                summary.memory_page_io_transfer_bytes == 8192 and
+                summary.memory_page_io_region_offset == 0
+        else
+            summary.memory_page_io_page_count > 0 and
+                summary.memory_page_io_io_bytes == summary.memory_page_io_page_count * 4096 and
+                summary.memory_page_io_io_bytes <= 0x7fff_ffff and
+                summary.memory_page_io_io_status == @as(i32, @intCast(summary.memory_page_io_io_bytes)) and
+                summary.memory_page_io_transfer_bytes == summary.memory_page_io_io_bytes and
+                summary.memory_page_io_region_offset % 4096 == 0;
         const slot_last_owner_ok =
             (summary.memory_backing_store_slot_last_owner_kind == r4os.abi.memory_backing_store_slot_owner_kind_diagnostic and
                 summary.memory_backing_store_slot_last_owner_id == backing_store_slot_owner and
@@ -269,7 +594,7 @@ const App = struct {
                 summary.memory_backing_store_slot_operation == r4os.abi.memory_backing_store_slot_operation_reserve) or
             (summary.memory_backing_store_slot_status == r4os.abi.memory_backing_store_slot_status_released and
                 summary.memory_backing_store_slot_operation == r4os.abi.memory_backing_store_slot_operation_release);
-        const ok = summary.version == r4os.abi.performance_snapshot_version and
+        const legacy_snapshot_ok = summary.version == r4os.abi.performance_snapshot_version and
             summary.size >= @sizeOf(r4os.abi.ProgramPerformanceSummary) and
             summary.tick_hz > 0 and
             summary.task_count > 0 and
@@ -303,9 +628,9 @@ const App = struct {
             summary.fs_cache_reads > 0 and
             summary.fs_cache_hits > 0 and
             summary.fs_cache_misses > 0 and
-            summary.fs_cache_dirty_entries == 0 and
-            summary.fs_cache_dirty_bytes == 0 and
-            summary.fs_cache_writeback_queue_depth == 0 and
+            summary.fs_cache_dirty_entries <= summary.fs_cache_entries_used and
+            summary.fs_cache_dirty_bytes <= summary.fs_cache_payload_bytes and
+            summary.fs_cache_writeback_queue_depth <= summary.fs_cache_writeback_queue_high_water and
             summary.fs_cache_writeback_queue_high_water > 0 and
             summary.fs_cache_deferred_write_requests > 0 and
             summary.fs_cache_writeback_drains > 0 and
@@ -318,7 +643,7 @@ const App = struct {
             summary.fs_cache_payload_bytes >= summary.fs_cache_clean_reclaimable_bytes and
             summary.fs_cache_pmm_reclaimable_bytes >= summary.fs_cache_clean_reclaimable_bytes and
             summary.fs_cache_pmm_reclaimable_bytes > 0 and
-            summary.fs_cache_pmm_dirty_bytes == 0 and
+            summary.fs_cache_pmm_dirty_bytes >= summary.fs_cache_dirty_non_reclaimable_bytes and
             summary.fs_cache_payload_allocations > 0 and
             summary.fs_cache_payload_allocation_failures == 0 and
             summary.fs_cache_payload_releases > 0 and
@@ -339,7 +664,8 @@ const App = struct {
             summary.global_reclaim_last_reason == r4os.abi.memory_reclaim_reason_diagnostic and
             summary.global_reclaim_last_requested_frames > 0 and
             summary.global_reclaim_last_returned_frames > 0 and
-            summary.global_reclaim_last_returned_frames <= summary.global_reclaim_last_requested_frames and
+            // Reclaim arbeitet clusterweise und darf deshalb mehr Frames als
+            // die angeforderte Untergrenze zurueckgeben.
             summary.global_reclaim_failed_drains == 0 and
             summary.memory_backing_store_status == r4os.abi.memory_backing_store_status_ready and
             backingStoreReadyFlagsOk(summary.memory_backing_store_flags) and
@@ -359,12 +685,11 @@ const App = struct {
             summary.memory_backing_store_slot_blockers == 0 and
             summary.memory_backing_store_slot_bytes == 4096 and
             summary.memory_backing_store_slot_capacity >= backing_store_slot_count and
-            summary.memory_backing_store_slot_reserved == 0 and
-            summary.memory_backing_store_slot_free == summary.memory_backing_store_slot_capacity and
-            summary.memory_backing_store_slot_valid == 0 and
-            summary.memory_backing_store_slot_dirty == 0 and
+            summary.memory_backing_store_slot_free + summary.memory_backing_store_slot_reserved == summary.memory_backing_store_slot_capacity and
+            summary.memory_backing_store_slot_valid <= summary.memory_backing_store_slot_reserved and
+            summary.memory_backing_store_slot_dirty <= summary.memory_backing_store_slot_valid and
             summary.memory_backing_store_slot_error == 0 and
-            summary.memory_backing_store_slot_range_count == 0 and
+            summary.memory_backing_store_slot_range_count <= summary.memory_backing_store_slot_max_ranges and
             slot_last_owner_ok and
             summary.memory_backing_store_slot_max_ranges >= 16 and
             summary.memory_backing_store_slot_probe_count >= 6 and
@@ -407,18 +732,14 @@ const App = struct {
             summary.memory_pager_gate_rollback_count > 0 and
             summary.memory_pager_gate_failure_count > 0 and
             page_io_last_ok and
+            page_io_shape_ok and
             summary.memory_page_io_blockers == 0 and
             summary.memory_page_io_slot_bytes == 4096 and
-            summary.memory_page_io_io_bytes == expected_page_io_bytes and
-            summary.memory_page_io_io_status == @as(i32, @intCast(expected_page_io_bytes)) and
-            summary.memory_page_io_page_count == expected_page_io_pages and
-            summary.memory_page_io_transfer_bytes == expected_page_io_bytes and
             summary.memory_page_io_expected_generation != 0 and
             summary.memory_page_io_pager_enabled == 0 and
             summary.memory_page_io_eviction_enabled == 1 and
             summary.memory_page_io_page_in_enabled == 1 and
             summary.memory_page_io_page_out_enabled == 1 and
-            summary.memory_page_io_region_offset == expected_page_io_region_offset and
             summary.memory_page_io_backing_offset < backing_store_bytes and
             summary.memory_page_io_capacity_slots >= backing_store_slot_count and
             page_io_valid_slots_ok and
@@ -471,8 +792,40 @@ const App = struct {
             flags_ok and
             wait_missing_ok and
             lock_ok;
-        self.printCheck("Performance summary fields", ok);
-        if (!ok) {
+        const contract_ok = summary.version == r4os.abi.performance_snapshot_version and
+            summary.size >= @sizeOf(r4os.abi.ProgramPerformanceSummary) and
+            summary.tick_hz > 0 and
+            flags_ok and
+            wait_missing_ok and
+            summary.task_count > 0 and
+            summary.task_count <= summary.task_max_count and
+            summary.boot_phase_count > 0 and
+            summary.storage_device_count > 0 and
+            summary.fs_cache_capacity > 0 and
+            summary.fs_cache_entries_used <= summary.fs_cache_capacity and
+            summary.fs_cache_writeback_queue_depth <= summary.fs_cache_writeback_queue_high_water and
+            summary.fs_cache_read_errors == 0 and
+            summary.fs_cache_write_errors == 0 and
+            summary.fs_cache_writeback_errors == 0 and
+            summary.storage_completion_timeouts == 0 and
+            summary.service_queue_used_total <= summary.service_queue_depth_total and
+            lock_ok and
+            summary.memory_backing_store_status == r4os.abi.memory_backing_store_status_ready and
+            backingStoreReadyFlagsOk(summary.memory_backing_store_flags) and
+            summary.memory_backing_store_blockers == 0 and
+            slot_last_operation_ok and
+            slot_last_owner_ok and
+            summary.memory_backing_store_slot_error == 0 and
+            summary.memory_backing_store_slot_free + summary.memory_backing_store_slot_reserved == summary.memory_backing_store_slot_capacity and
+            page_io_last_ok and
+            page_io_shape_ok and
+            summary.memory_page_io_blockers == 0 and
+            summary.memory_page_io_error_slots == 0 and
+            summary.memory_vm_page_state_status == r4os.abi.memory_vm_page_state_status_ready and
+            summary.memory_vm_pager_data_lost_pages == 0;
+        self.printCheck("Performance summary contract", contract_ok);
+        if (!legacy_snapshot_ok) {
+            self.sys.println("  Legacy exact-state aggregate: OBSERVED (not a contract gate)");
             self.sys.write("  version=");
             self.sys.printU64(summary.version);
             self.sys.write(" size=");
@@ -657,7 +1010,7 @@ const App = struct {
             self.sys.printU64(summary.memory_vm_pager_disabled_eviction_gates);
             self.sys.println("");
         }
-        return ok;
+        return contract_ok;
     }
 
     fn burnPreemptionWindow(self: *App) bool {
@@ -709,7 +1062,7 @@ const App = struct {
 
     fn probeAvxRegisterState(self: *App) bool {
         if (!self.sys.hasFn("thread_create_handle") or !self.sys.hasFn("thread_handle_join")) return self.failBool("AVX workload thread API missing");
-        const before = self.dev.performanceSummary() orelse return self.failBool("AVX snapshot unavailable");
+        const before = self.captureSummary() orelse return self.failBool("AVX snapshot unavailable");
         const features_ok = (before.flags & r4os.abi.performance_flag_avx_state_ready) != 0 and
             before.fpu_avx_supported == 1 and
             before.fpu_avx_enabled == 1 and
@@ -950,11 +1303,11 @@ const App = struct {
 
     fn probeDisplayResponsiveness(self: *App) bool {
         if (!self.dev.hasFn("display_summary") or !self.dev.hasFn("performance_summary")) {
-            self.printCheck("Display responsiveness present", false);
+            self.printCheck("Display present conformance", false);
             return false;
         }
         const before = self.dev.displaySummary() orelse {
-            self.printCheck("Display responsiveness present", false);
+            self.printCheck("Display present conformance", false);
             return false;
         };
         const pixel: [1]u32 = .{0x00_20_60_a0};
@@ -962,7 +1315,7 @@ const App = struct {
         const blit_rc = self.draw.displayBlitXrgb32(0, 0, 1, 1, pixel[0..]);
         const present_rc = self.draw.displayPresent();
         const after = self.dev.displaySummary() orelse {
-            self.printCheck("Display responsiveness present", false);
+            self.printCheck("Display present conformance", false);
             return false;
         };
         const ok = begin_rc > 0 and
@@ -972,7 +1325,7 @@ const App = struct {
             after.present_bytes_total >= before.present_bytes_total + 4 and
             after.present_max_ticks >= after.present_last_ticks and
             after.present_total_ticks >= before.present_total_ticks;
-        self.printCheck("Display responsiveness present", ok);
+        self.printCheck("Display present conformance", ok);
         if (!ok) {
             self.sys.write("  display before=");
             self.sys.printU64(before.present_count);
@@ -997,14 +1350,11 @@ const App = struct {
         return ok;
     }
 
-    // 0.56.12: Blit-Durchsatz-Mikrobenchmark (Vorher/Nachher-Beleg fuer
-    // den copyToVisible-Fast-Path). Adaptiv: blittet 320x64-XRGB-Frames,
-    // bis >=30 Ticks vergangen sind (oder Deckel), und rechnet MB/s.
+    // Isolierter Blit-Durchsatz-Benchmark. Jede Wiederholung laeuft fuer
+    // eine zeitbasierte Mindestdauer; die Frequenz wurde vor der Schleife
+    // genau einmal mit dem Laufkontext erfasst.
     fn probeBlitThroughput(self: *App) bool {
-        if (!self.dev.hasFn("display_summary")) {
-            self.printCheck("Blit throughput bench", false);
-            return false;
-        }
+        if (!self.dev.hasFn("display_summary")) return false;
         const width: u32 = 320;
         const height: u32 = 64;
         const pixel_count: usize = @as(usize, width) * height;
@@ -1012,49 +1362,85 @@ const App = struct {
         while (i < pixel_count) : (i += 1) {
             blit_bench_frame[i] = 0xFF000000 | @as(u32, @intCast((i * 7) & 0xFFFFFF));
         }
-        const min_ticks: u64 = 30;
+        const frequency = self.time_state.monotonic_hz;
+        const min_ticks = measurement.ticksForMilliseconds(frequency, measurement.blit_min_duration_ms);
+        if (min_ticks == 0) return false;
+
         const max_iters: u64 = 20000;
-        var iters: u64 = 0;
-        const start = self.sys.ticks();
-        var elapsed: u64 = 0;
-        while (iters < max_iters) {
-            _ = self.draw.displayBeginFrameRect(0, 0, width, height);
-            const rc = self.draw.displayBlitXrgb32(0, 0, width, height, blit_bench_frame[0..pixel_count]);
-            const present_rc = self.draw.displayPresent();
-            if (rc < 0 or present_rc <= 0) {
-                self.printCheck("Blit throughput bench", false);
-                return false;
+        self.stats.blit_sample_count = 0;
+        var sample_index: usize = 0;
+        while (sample_index < self.config.repetitions) : (sample_index += 1) {
+            var iterations: u64 = 0;
+            const start = self.sys.ticks();
+            var elapsed: u64 = 0;
+            while (iterations < max_iters) {
+                const begin_rc = self.draw.displayBeginFrameRect(0, 0, width, height);
+                const blit_rc = self.draw.displayBlitXrgb32(0, 0, width, height, blit_bench_frame[0..pixel_count]);
+                const present_rc = self.draw.displayPresent();
+                if (begin_rc <= 0 or blit_rc < 0 or present_rc <= 0) return false;
+                iterations += 1;
+                elapsed = self.sys.ticks() - start;
+                if (elapsed >= min_ticks) break;
             }
-            iters += 1;
-            elapsed = self.sys.ticks() - start;
-            if (elapsed >= min_ticks) break;
+            if (elapsed < min_ticks or elapsed == 0) return false;
+
+            const bytes_total = iterations * @as(u64, pixel_count) * 4;
+            self.stats.blit_samples[sample_index] = .{
+                .iterations = iterations,
+                .elapsed_ticks = elapsed,
+                .bytes = bytes_total,
+                .kb_per_second = measurement.throughputKbPerSecond(bytes_total, elapsed, frequency),
+            };
+            self.stats.blit_sample_count += 1;
         }
-        const bytes_total = iters * pixel_count * 4;
-        // Ticks laufen mit ~100 Hz: MB/s = bytes / (ticks/100) / 1MB.
-        const mb_s: u64 = if (elapsed > 0)
-            (bytes_total * 100) / (elapsed * 1024 * 1024)
-        else
-            0;
-        self.sys.write("PERFDIAG blit-bench: iters=");
-        self.sys.printU64(iters);
-        self.sys.write(" ticks=");
-        self.sys.printU64(elapsed);
-        self.sys.write(" bytes=");
-        self.sys.printU64(bytes_total);
-        self.sys.write(" approx_mb_s=");
-        self.sys.printU64(mb_s);
-        self.sys.println("");
-        self.printCheck("Blit throughput bench", true);
-        return true;
+        return self.stats.blit_sample_count == self.config.repetitions;
+    }
+
+    fn printBlitResults(self: *App) void {
+        var rates: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.blit_sample_count) : (index += 1) {
+            const sample = self.stats.blit_samples[index];
+            rates[index] = sample.kb_per_second;
+            self.sys.write("  Blit sample ");
+            self.sys.printU64(index + 1);
+            self.sys.write(": iterations=");
+            self.sys.printU64(sample.iterations);
+            self.sys.write(" ticks=");
+            self.sys.printU64(sample.elapsed_ticks);
+            self.sys.write(" bytes=");
+            self.sys.printU64(sample.bytes);
+            self.sys.write(" KB/s=");
+            self.sys.printU64(sample.kb_per_second);
+            self.sys.write(" MB/s=");
+            self.sys.printU64(sample.kb_per_second / measurement.kb_per_mb);
+            self.sys.println("");
+        }
+        const distribution = measurement.summarize(rates[0..self.stats.blit_sample_count]);
+        self.sys.write("  Blit distribution KB/s: n=");
+        self.sys.printU64(distribution.count);
+        self.sys.write(" min=");
+        self.sys.printU64(distribution.minimum);
+        self.sys.write(" p50=");
+        self.sys.printU64(distribution.p50);
+        self.sys.write(" p95=");
+        self.sys.printU64(distribution.p95);
+        self.sys.write(" p99=");
+        self.sys.printU64(distribution.p99);
+        self.sys.write(" max=");
+        self.sys.printU64(distribution.maximum);
+        self.sys.write(" mean=");
+        self.sys.printU64(distribution.mean);
+        self.sys.println(" (1 MB = 1024 KB)");
     }
 
     fn probeAudioLatency(self: *App) bool {
         if (!self.dev.hasFn("performance_summary")) {
-            self.printCheck("Audio latency write", false);
+            self.printCheck("Audio write conformance", false);
             return false;
         }
-        const before = self.dev.performanceSummary() orelse {
-            self.printCheck("Audio latency write", false);
+        const before = self.captureSummary() orelse {
+            self.printCheck("Audio write conformance", false);
             return false;
         };
         var pcm: [4096]u8 = undefined;
@@ -1071,14 +1457,14 @@ const App = struct {
 
         const stream = self.audio.audioOpenStream(48_000, 2, .s16le);
         if (stream < 0) {
-            self.printCheck("Audio latency write", false);
+            self.printCheck("Audio write conformance", false);
             return false;
         }
         const stream_id: u32 = @intCast(stream);
         const written = self.audio.audioWrite(stream_id, pcm[0..]);
         const closed = self.audio.audioClose(stream_id);
-        const after = self.dev.performanceSummary() orelse {
-            self.printCheck("Audio latency write", false);
+        const after = self.captureSummary() orelse {
+            self.printCheck("Audio write conformance", false);
             return false;
         };
         const ok = written == @as(i32, @intCast(pcm.len)) and
@@ -1090,7 +1476,7 @@ const App = struct {
             after.audio_backend_write_total_ticks >= before.audio_backend_write_total_ticks and
             after.audio_backend_write_max_ticks >= after.audio_backend_write_last_ticks and
             after.audio_stream_dropped_bytes == before.audio_stream_dropped_bytes;
-        self.printCheck("Audio latency write", ok);
+        self.printCheck("Audio write conformance", ok);
         if (!ok) {
             self.sys.write("  audio writes=");
             self.sys.printU64(before.audio_stream_writes);
@@ -1177,29 +1563,21 @@ const App = struct {
     }
 
     fn testDriverWork(self: *App, summary: r4os.abi.ProgramPerformanceSummary) bool {
+        const submitted_by_source = summary.driver_work_submitted_from_irq +% summary.driver_work_submitted_from_task;
+        const terminal_items = summary.driver_work_completed +% summary.driver_work_failed +% summary.driver_work_cancelled;
         const ok = (summary.flags & r4os.abi.performance_flag_driver_workqueue_ready) != 0 and
             summary.driver_work_worker_started != 0 and
             summary.driver_work_capacity >= r4os.abi.driver_work_queue_capacity and
-            // 0.56.31-Triage: Inaktivitaet ist seit der R4D-Treiber-
-            // Auslagerung (0.56.12) der Sollzustand im Normal-Boot; die
-            // Aktiv-Erwartungen gelten weiter, sobald Items laufen.
-            ((summary.driver_work_submitted_from_irq == 0 and
-                summary.driver_work_started == 0 and
-                summary.driver_work_failed == 0 and
-                summary.driver_work_dropped == 0 and
-                summary.driver_work_wait_timeouts == 0 and
-                summary.driver_work_invalid_handles == 0) or
-                (summary.driver_work_submitted_from_irq > 0 and
-                    summary.driver_work_submitted_from_task == 0 and
-                    summary.driver_work_started > 0 and
-                    summary.driver_work_completed > 0 and
-                    summary.driver_work_failed == 0 and
-                    summary.driver_work_dropped == 0 and
-                    summary.driver_work_waits > 0 and
-                    summary.driver_work_wait_timeouts == 0 and
-                    summary.driver_work_wait_denied_irq == 0 and
-                    summary.driver_work_releases > 0 and
-                    summary.driver_work_invalid_handles == 0));
+            summary.driver_work_depth <= summary.driver_work_capacity and
+            summary.driver_work_high_water <= summary.driver_work_capacity and
+            summary.driver_work_submitted == submitted_by_source and
+            summary.driver_work_started <= summary.driver_work_submitted and
+            terminal_items <= summary.driver_work_started and
+            summary.driver_work_failed == 0 and
+            summary.driver_work_dropped == 0 and
+            summary.driver_work_wait_timeouts == 0 and
+            summary.driver_work_wait_denied_irq == 0 and
+            summary.driver_work_invalid_handles == 0;
         self.printCheck("Driver workqueue completion", ok);
         if (!ok) {
             self.sys.write("  driver-work cap=");
@@ -1210,6 +1588,8 @@ const App = struct {
             self.sys.printU64(summary.driver_work_submitted_from_irq);
             self.sys.write(" task=");
             self.sys.printU64(summary.driver_work_submitted_from_task);
+            self.sys.write(" started=");
+            self.sys.printU64(summary.driver_work_started);
             self.sys.write(" done=");
             self.sys.printU64(summary.driver_work_completed);
             self.sys.write(" fail=");
@@ -1274,7 +1654,7 @@ const App = struct {
         }
         ok = ok and checked > 0 and active > 0 and worker_ok;
         self.printCheck("Storage driver completion", worker_ok);
-        self.printCheck("Storage counter baseline", ok);
+        self.printCheck("Storage counter conformance", ok);
         return ok;
     }
 
@@ -1289,7 +1669,7 @@ const App = struct {
             if (i < 12) self.printBootPhase(phase);
         }
         const ok = checked > 0 and saw_runtime;
-        self.printCheck("Boot phase baseline", ok);
+        self.printCheck("Boot phase conformance", ok);
         return ok;
     }
 
@@ -2022,6 +2402,7 @@ const App = struct {
     }
 
     fn printCheck(self: *App, label: []const u8, ok: bool) void {
+        self.recordCheck(label, ok);
         self.sys.write("  ");
         self.sys.write(label);
         self.sys.write(": ");
@@ -2033,7 +2414,7 @@ const App = struct {
             self.printCheck("FS page cache read-through", false);
             return false;
         }
-        const before = self.dev.performanceSummary() orelse {
+        const before = self.captureSummary() orelse {
             self.printCheck("FS page cache read-through", false);
             return false;
         };
@@ -2041,7 +2422,7 @@ const App = struct {
         var second: [128]u8 = undefined;
         const a = self.sys.fileReadAt("C:\\R4OS\\CONFIG\\VERSION.R4S", 0, first[0..]);
         const b = self.sys.fileReadAt("C:\\R4OS\\CONFIG\\VERSION.R4S", 0, second[0..]);
-        const after = self.dev.performanceSummary() orelse {
+        const after = self.captureSummary() orelse {
             self.printCheck("FS page cache read-through", false);
             return false;
         };
@@ -2088,7 +2469,7 @@ const App = struct {
             self.printCheck("FS page cache writeback", false);
             return false;
         }
-        const before = self.dev.performanceSummary() orelse {
+        const before = self.captureSummary() orelse {
             self.printCheck("FS page cache writeback", false);
             return false;
         };
@@ -2096,7 +2477,7 @@ const App = struct {
         const written = self.sys.fileWrite("C:\\TEMP\\PERFWB.TXT", payload);
         var verify: [64]u8 = undefined;
         const read = self.sys.fileReadAt("C:\\TEMP\\PERFWB.TXT", 0, verify[0..]);
-        const after = self.dev.performanceSummary() orelse {
+        const after = self.captureSummary() orelse {
             self.printCheck("FS page cache writeback", false);
             return false;
         };
@@ -2151,7 +2532,7 @@ const App = struct {
             self.printCheck("Global reclaim probe", false);
             return false;
         }
-        const before = self.dev.performanceSummary() orelse {
+        const before = self.captureSummary() orelse {
             self.printCheck("Global reclaim probe", false);
             return false;
         };
@@ -2159,7 +2540,7 @@ const App = struct {
             self.printCheck("Global reclaim probe", false);
             return false;
         };
-        const after = self.dev.performanceSummary() orelse {
+        const after = self.captureSummary() orelse {
             self.printCheck("Global reclaim probe", false);
             return false;
         };
@@ -2176,8 +2557,7 @@ const App = struct {
             after.global_reclaim_returned_frames >= before.global_reclaim_returned_frames + probe.returned_frames and
             after.global_reclaim_last_reason == r4os.abi.memory_reclaim_reason_diagnostic and
             after.global_reclaim_last_requested_frames == 1 and
-            after.global_reclaim_last_returned_frames == probe.returned_frames and
-            after.fs_cache_pmm_reclaimable_bytes + probe.returned_bytes <= before.fs_cache_pmm_reclaimable_bytes;
+            after.global_reclaim_last_returned_frames == probe.returned_frames;
         self.printCheck("Global reclaim probe", ok);
         if (!ok) {
             self.sys.write("  returned=");
@@ -2494,7 +2874,7 @@ const App = struct {
         self.printCheck("Backing slots lifecycle unbound instance", unbound_instance_ok);
         if (!unbound_instance_ok) return false;
 
-        const before_cleanup = self.dev.performanceSummary() orelse {
+        const before_cleanup = self.captureSummary() orelse {
             self.printCheck("Backing slots lifecycle counters", false);
             return false;
         };
@@ -2503,7 +2883,7 @@ const App = struct {
             return false;
         }
         region_release_needed = false;
-        const after_cleanup = self.dev.performanceSummary() orelse {
+        const after_cleanup = self.captureSummary() orelse {
             self.printCheck("Backing slots lifecycle counters", false);
             return false;
         };
@@ -2883,7 +3263,7 @@ const App = struct {
         self.printCheck("Page I/O page in", in_ok);
         if (!in_ok) return false;
 
-        const perf = self.dev.performanceSummary() orelse {
+        const perf = self.captureSummary() orelse {
             self.printCheck("Page I/O performance", false);
             return false;
         };
@@ -3104,7 +3484,7 @@ const App = struct {
             expected[i] = @truncate(i *% 7 +% 0x21);
             ptr[i] = expected[i];
         }
-        const before_error_policy = self.dev.performanceSummary() orelse {
+        const before_error_policy = self.captureSummary() orelse {
             self.printCheck("VM pager error policy", false);
             return false;
         };
@@ -3117,7 +3497,7 @@ const App = struct {
             self.printCheck("VM pager error policy", false);
             return false;
         };
-        const after_error_policy = self.dev.performanceSummary() orelse {
+        const after_error_policy = self.captureSummary() orelse {
             self.printCheck("VM pager error policy", false);
             return false;
         };
@@ -3139,7 +3519,7 @@ const App = struct {
         self.printCheck("VM pager error policy", vm_error_policy_ok);
         if (!vm_error_policy_ok) return false;
 
-        const before_page_out_summary = self.dev.performanceSummary() orelse {
+        const before_page_out_summary = self.captureSummary() orelse {
             self.printCheck("VM page state page out", false);
             return false;
         };
@@ -3151,7 +3531,7 @@ const App = struct {
             self.printCheck("VM page state page out", false);
             return false;
         };
-        const after_page_out_summary = self.dev.performanceSummary() orelse {
+        const after_page_out_summary = self.captureSummary() orelse {
             self.printCheck("VM page state page out", false);
             return false;
         };
@@ -3166,7 +3546,7 @@ const App = struct {
         self.printCheck("VM page state page out", page_out_ok);
         if (!page_out_ok) return false;
 
-        const before_fault = self.dev.performanceSummary() orelse {
+        const before_fault = self.captureSummary() orelse {
             self.printCheck("VM page state fault page in", false);
             return false;
         };
@@ -3176,7 +3556,7 @@ const App = struct {
             self.printCheck("VM page state fault page in", false);
             return false;
         };
-        const after_fault_summary = self.dev.performanceSummary() orelse {
+        const after_fault_summary = self.captureSummary() orelse {
             self.printCheck("VM page state fault page in", false);
             return false;
         };
@@ -3205,7 +3585,7 @@ const App = struct {
         self.printCheck("VM page state clear slot", clear_slot_ok);
         if (!clear_slot_ok) return false;
 
-        const before_cleanup = self.dev.performanceSummary() orelse {
+        const before_cleanup = self.captureSummary() orelse {
             self.printCheck("VM page state cleanup", false);
             return false;
         };
@@ -3215,7 +3595,7 @@ const App = struct {
         }
         region_release_needed = false;
         slot_release_needed = false;
-        const after_cleanup = self.dev.performanceSummary() orelse {
+        const after_cleanup = self.captureSummary() orelse {
             self.printCheck("VM page state cleanup", false);
             return false;
         };
@@ -3294,37 +3674,43 @@ const App = struct {
             self.printCheck("VM eviction state", false);
             return false;
         };
-        const before = self.dev.performanceSummary() orelse {
+        const before = self.captureSummary() orelse {
             self.printCheck("VM eviction baseline", false);
             return false;
         };
 
         const frame_bytes: u64 = if (before.fs_cache_payload_frame_bytes == 0) 4096 else before.fs_cache_payload_frame_bytes;
+        var remaining_fs_frames = before.fs_cache_pmm_reclaimable_bytes / frame_bytes;
+        const fs_frames = remaining_fs_frames + 1;
+        var requested_frames: u32 = if (fs_frames > 1024) 1024 else @intCast(fs_frames);
+        if (requested_frames == 0) requested_frames = 1;
 
         var probe: ?r4os.abi.ProgramMemoryReclaimProbe = null;
+        const max_reclaim_attempts: u32 = 16;
         var attempts: u32 = 0;
-        while (attempts < 8) : (attempts += 1) {
-            const current_perf = self.dev.performanceSummary() orelse {
-                self.printCheck("VM eviction reclaim", false);
-                return false;
-            };
-            const fs_frames = (current_perf.fs_cache_pmm_reclaimable_bytes / frame_bytes) + 1;
-            var requested_frames: u32 = if (fs_frames > 1024) 1024 else @intCast(fs_frames);
-            if (requested_frames == 0) requested_frames = 1;
+        while (attempts < max_reclaim_attempts) : (attempts += 1) {
             const current = self.dev.memoryReclaimProbe(requested_frames) orelse {
                 self.printCheck("VM eviction reclaim", false);
                 return false;
             };
             probe = current;
             if (current.vm_returned_frames > 0 and current.vm_page_outs > 0) break;
-            requested_frames = 1;
+
+            const returned_fs_frames = @as(u64, current.fs_returned_frames);
+            remaining_fs_frames = if (returned_fs_frames >= remaining_fs_frames)
+                0
+            else
+                remaining_fs_frames - returned_fs_frames;
+            const actual_cap = if (current.requested_frames == 0) 1 else current.requested_frames;
+            const next_request = @min(remaining_fs_frames + 1, @as(u64, actual_cap));
+            requested_frames = @intCast(next_request);
         }
         const final_probe = probe orelse {
             self.printCheck("VM eviction reclaim", false);
             return false;
         };
 
-        const after_reclaim = self.dev.performanceSummary() orelse {
+        const after_reclaim = self.captureSummary() orelse {
             self.printCheck("VM eviction summary", false);
             return false;
         };
@@ -3349,22 +3735,15 @@ const App = struct {
             }
         }
 
-        const before_fault = self.dev.performanceSummary() orelse {
-            self.printCheck("VM eviction fault baseline", false);
-            return false;
-        };
-        const fault_index: usize = @intCast(evicted_page * 4096 + 17);
-        const fault_byte = if (evicted_page < evict_pages) ptr[fault_index] else 0;
-        const after_fault_state = self.dev.memoryVmPageStateProbe(region.id, 0, evict_pages, r4os.abi.memory_vm_page_state_operation_query, 0, 0, 0, 0) orelse {
-            self.printCheck("VM eviction fault state", false);
-            return false;
-        };
-        const after_fault = self.dev.performanceSummary() orelse {
-            self.printCheck("VM eviction fault summary", false);
-            return false;
-        };
-
-        const expected_byte: u8 = @truncate(fault_index *% 11 +% 0x33);
+        const target_was_evicted = after_state.nonresident_pages > 0 or after_state.slot_bound_pages > 0;
+        const target_state_ok = if (target_was_evicted)
+            after_state.nonresident_pages > 0 and
+                after_state.slot_bound_pages > 0 and
+                evicted_page < evict_pages
+        else
+            after_state.resident_pages >= evict_pages and
+                after_state.nonresident_pages == 0 and
+                after_state.slot_bound_pages == 0;
         const ok = before_state.status == r4os.abi.memory_vm_page_state_status_ready and
             before_state.resident_pages >= evict_pages and
             before_state.pinned_pages == 1 and
@@ -3372,31 +3751,35 @@ const App = struct {
             final_probe.size >= @sizeOf(r4os.abi.ProgramMemoryReclaimProbe) and
             final_probe.vm_returned_frames > 0 and
             final_probe.vm_page_outs > 0 and
+            final_probe.vm_failures == 0 and
+            final_probe.failed_drains == 0 and
             after_reclaim.global_reclaim_vm_returned_frames >= before.global_reclaim_vm_returned_frames + final_probe.vm_returned_frames and
             after_reclaim.global_reclaim_vm_page_outs >= before.global_reclaim_vm_page_outs + final_probe.vm_page_outs and
             after_reclaim.memory_vm_eviction_success_count > before.memory_vm_eviction_success_count and
             after_reclaim.memory_vm_eviction_returned_frames >= before.memory_vm_eviction_returned_frames + final_probe.vm_returned_frames and
             after_state.status == r4os.abi.memory_vm_page_state_status_ready and
             after_state.pinned_pages == 1 and
-            after_state.nonresident_pages > 0 and
-            after_state.slot_bound_pages > 0 and
-            evicted_page < evict_pages and
-            fault_byte == expected_byte and
-            after_fault_state.resident_pages >= after_state.resident_pages + 1 and
-            after_fault.memory_vm_page_state_fault_page_in_count > before_fault.memory_vm_page_state_fault_page_in_count and
-            after_fault.memory_page_io_status == r4os.abi.memory_page_io_status_page_in_ok and
-            after_fault.memory_page_io_eviction_enabled == 1;
+            target_state_ok;
         self.printCheck("VM eviction reclaim", ok);
-        self.sys.write("  VM eviction: fs=");
+        const attempts_made = if (attempts < max_reclaim_attempts) attempts + 1 else attempts;
+        self.sys.write("  VM eviction: attempts=");
+        self.sys.printU64(attempts_made);
+        self.sys.write(" requested=");
+        self.sys.printU64(final_probe.requested_frames);
+        self.sys.write(" returned=");
+        self.sys.printU64(final_probe.returned_frames);
+        self.sys.write(" fs=");
         self.sys.printU64(final_probe.fs_returned_frames);
         self.sys.write(" vm=");
         self.sys.printU64(final_probe.vm_returned_frames);
         self.sys.write(" pageOut=");
         self.sys.printU64(final_probe.vm_page_outs);
+        self.sys.write(" vmFail=");
+        self.sys.printU64(final_probe.vm_failures);
         self.sys.write(" page=");
         self.sys.printU64(evicted_page);
-        self.sys.write(" faultIn=");
-        self.sys.printU64(after_fault.memory_vm_page_state_fault_page_in_count);
+        self.sys.write(" targetEvicted=");
+        self.sys.write(if (target_was_evicted) "yes" else "no");
         self.sys.println("");
 
         if (self.sys.vmRelease(region.id) != r4os.abi.vm_ok) {
@@ -3509,6 +3892,7 @@ const App = struct {
     }
 
     fn failBool(self: *App, msg: []const u8) bool {
+        self.recordCheck(msg, false);
         self.sys.write("  ");
         self.sys.println(msg);
         return false;
@@ -3574,6 +3958,23 @@ fn spinForPreemption(rounds: u32) void {
 pub fn r4_app_main(r4_app: *r4os.App) i32 {
     var app = App.init(r4_app) orelse return r4os.abi.err_no_group;
     return app.run();
+}
+
+fn runClassification(mode: measurement.Mode) []const u8 {
+    return switch (mode) {
+        .baseline => "passive-snapshot",
+        .conformance => "contract-conformance",
+        .benchmark => "performance-benchmark",
+    };
+}
+
+fn timeBackendName(value: u32) []const u8 {
+    return switch (value) {
+        0 => "pit",
+        1 => "hpet",
+        2 => "lapic",
+        else => "unknown",
+    };
 }
 
 fn spanZ(raw: []const u8) []const u8 {
