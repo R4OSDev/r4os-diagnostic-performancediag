@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.3";
+const module_version = "0.3.4";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -18,11 +18,14 @@ const backing_store_gate_bytes: u64 = 8 * 4096;
 const backing_store_lifecycle_vm_slots: u64 = 2;
 const backing_store_lifecycle_region_bytes: u64 = 4 * 4096;
 var preemption_burn_sink: u64 = 0;
+var service_registry_benchmark_sink: u64 = 0;
 var preemption_worker_stop: u32 = 0;
 var avx_worker_results: [2]u32 = .{ 0, 0 };
 // 0.56.12: Frame-Puffer fuer den Blit-Durchsatz-Benchmark (320x64 XRGB).
 var blit_bench_frame: [320 * 64]u32 = .{0} ** (320 * 64);
 const max_check_results = 256;
+const max_service_registry_samples = measurement.service_registry_phase_count * measurement.max_repetitions;
+const service_registry_max_entries: u32 = 64;
 
 const CheckResult = struct {
     label: []const u8 = &.{},
@@ -46,6 +49,35 @@ const ClockSample = struct {
     regressions: u64 = 0,
 };
 
+const ServiceRegistrySample = struct {
+    phase: measurement.ServiceRegistryPhase = .service_info,
+    repetition: u8 = 0,
+    iterations: u64 = 0,
+    services_per_enumeration: u64 = 0,
+    entries: u64 = 0,
+    api_calls: u64 = 0,
+    api_end_markers: u64 = 0,
+    api_errors: u64 = 0,
+    elapsed_ns: u64 = 0,
+    ns_per_enumeration: u64 = 0,
+    index_queries: u64 = 0,
+    refresh_requests: u64 = 0,
+    refresh_visits: u64 = 0,
+    instance_lookups: u64 = 0,
+    counter_end_markers: u64 = 0,
+    legacy_reference_refresh_visits: u64 = 0,
+    checksum: u64 = 0,
+};
+
+const ServiceRegistryWork = struct {
+    entries: u64 = 0,
+    api_calls: u64 = 0,
+    end_markers: u64 = 0,
+    errors: u64 = 0,
+    services_per_enumeration: u64 = 0,
+    checksum: u64 = 0xcbf29ce484222325,
+};
+
 const RunStats = struct {
     summary_query_attempts: u32 = 0,
     summary_query_successes: u32 = 0,
@@ -59,6 +91,8 @@ const RunStats = struct {
     blit_sample_count: usize = 0,
     clock_samples: [measurement.max_repetitions]ClockSample = .{ClockSample{}} ** measurement.max_repetitions,
     clock_sample_count: usize = 0,
+    service_registry_samples: [max_service_registry_samples]ServiceRegistrySample = .{ServiceRegistrySample{}} ** max_service_registry_samples,
+    service_registry_sample_count: usize = 0,
 };
 const avx_pattern_a: [32]u8 align(32) = .{
     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
@@ -169,6 +203,7 @@ const App = struct {
                 ok = switch (self.config.benchmark_kind) {
                     .blit => self.probeBlitThroughput(),
                     .clock => self.probeMonotonicClock(),
+                    .service_registry => self.probeServiceRegistry(),
                 };
                 if (self.captureSummary()) |summary| {
                     post_summary = summary;
@@ -185,6 +220,10 @@ const App = struct {
                     .clock => {
                         self.printClockResults();
                         self.printCheck("Monotonic clock benchmark", ok);
+                    },
+                    .service_registry => {
+                        self.printServiceRegistryResults();
+                        self.printCheck("Linear service registry benchmark", ok);
                     },
                 }
             },
@@ -300,6 +339,7 @@ const App = struct {
         self.sys.println("  PERFDIAG /CONFORMANCE");
         self.sys.println("  PERFDIAG /BENCHMARK /BLIT /REPEAT:5 /COLD|/WARM");
         self.sys.println("  PERFDIAG /BENCHMARK /CLOCK /REPEAT:5 /WARM");
+        self.sys.println("  PERFDIAG /BENCHMARK /SERVICE-REGISTRY /REPEAT:5 /WARM");
         self.sys.println("No mode runs the passive baseline. Repetitions: 3..20.");
     }
 
@@ -485,6 +525,50 @@ const App = struct {
             self.sys.printU64(sample.regressions);
             self.sys.println("}");
         }
+        sample_index = 0;
+        while (sample_index < self.stats.service_registry_sample_count) : (sample_index += 1) {
+            const sample = self.stats.service_registry_samples[sample_index];
+            self.machineLinePrefix("service_registry_sample");
+            self.sys.write(",\"phase\":");
+            self.printJsonString(sample.phase.name());
+            self.sys.write(",\"phase_id\":");
+            self.sys.printU64(@intFromEnum(sample.phase));
+            self.sys.write(",\"sample\":");
+            self.sys.printU64(sample.repetition);
+            self.sys.write(",\"iterations\":");
+            self.sys.printU64(sample.iterations);
+            self.sys.write(",\"services_per_enumeration\":");
+            self.sys.printU64(sample.services_per_enumeration);
+            self.sys.write(",\"entries\":");
+            self.sys.printU64(sample.entries);
+            self.sys.write(",\"api_calls\":");
+            self.sys.printU64(sample.api_calls);
+            self.sys.write(",\"api_end_markers\":");
+            self.sys.printU64(sample.api_end_markers);
+            self.sys.write(",\"api_errors\":");
+            self.sys.printU64(sample.api_errors);
+            self.sys.write(",\"elapsed_ns\":");
+            self.sys.printU64(sample.elapsed_ns);
+            self.sys.write(",\"ns_per_enumeration\":");
+            self.sys.printU64(sample.ns_per_enumeration);
+            self.sys.write(",\"index_queries\":");
+            self.sys.printU64(sample.index_queries);
+            self.sys.write(",\"refresh_requests\":");
+            self.sys.printU64(sample.refresh_requests);
+            self.sys.write(",\"refresh_visits\":");
+            self.sys.printU64(sample.refresh_visits);
+            self.sys.write(",\"instance_lookups\":");
+            self.sys.printU64(sample.instance_lookups);
+            self.sys.write(",\"counter_end_markers\":");
+            self.sys.printU64(sample.counter_end_markers);
+            self.sys.write(",\"legacy_reference_refresh_visits\":");
+            self.sys.printU64(sample.legacy_reference_refresh_visits);
+            self.sys.write(",\"refresh_reduction_basis_points\":");
+            self.sys.printU64(reductionBasisPoints(sample.legacy_reference_refresh_visits, sample.refresh_visits));
+            self.sys.write(",\"checksum\":");
+            self.sys.printU64(sample.checksum);
+            self.sys.println("}");
+        }
         if (self.stats.clock_sample_count > 0) {
             const distribution = measurement.summarize(clock_costs[0..self.stats.clock_sample_count]);
             self.machineLinePrefix("clock_distribution");
@@ -508,6 +592,41 @@ const App = struct {
             const distribution = measurement.summarize(rates[0..self.stats.blit_sample_count]);
             self.machineLinePrefix("blit_distribution");
             self.sys.write(",\"unit\":\"KB/s\",\"count\":");
+            self.sys.printU64(distribution.count);
+            self.sys.write(",\"min\":");
+            self.sys.printU64(distribution.minimum);
+            self.sys.write(",\"p50\":");
+            self.sys.printU64(distribution.p50);
+            self.sys.write(",\"p95\":");
+            self.sys.printU64(distribution.p95);
+            self.sys.write(",\"p99\":");
+            self.sys.printU64(distribution.p99);
+            self.sys.write(",\"max\":");
+            self.sys.printU64(distribution.maximum);
+            self.sys.write(",\"mean\":");
+            self.sys.printU64(distribution.mean);
+            self.sys.println("}");
+        }
+        var phase_index: u8 = 0;
+        while (phase_index < measurement.service_registry_phase_count) : (phase_index += 1) {
+            const phase: measurement.ServiceRegistryPhase = @enumFromInt(phase_index);
+            var costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+            var cost_count: usize = 0;
+            sample_index = 0;
+            while (sample_index < self.stats.service_registry_sample_count) : (sample_index += 1) {
+                const sample = self.stats.service_registry_samples[sample_index];
+                if (sample.phase != phase) continue;
+                costs[cost_count] = sample.ns_per_enumeration;
+                cost_count += 1;
+            }
+            if (cost_count == 0) continue;
+            const distribution = measurement.summarize(costs[0..cost_count]);
+            self.machineLinePrefix("service_registry_distribution");
+            self.sys.write(",\"phase\":");
+            self.printJsonString(phase.name());
+            self.sys.write(",\"phase_id\":");
+            self.sys.printU64(phase_index);
+            self.sys.write(",\"unit\":\"ns/enumeration\",\"count\":");
             self.sys.printU64(distribution.count);
             self.sys.write(",\"min\":");
             self.sys.printU64(distribution.minimum);
@@ -1802,6 +1921,200 @@ const App = struct {
         self.sys.write(" mean=");
         self.sys.printU64(distribution.mean);
         self.sys.println("");
+    }
+
+    fn probeServiceRegistry(self: *App) bool {
+        if (!self.sys.hasFn("service_info") or
+            !self.sys.hasFn("service_detail") or
+            !self.dev.hasFn("performance_summary") or
+            !self.monotonic_clock_available) return false;
+
+        self.stats.service_registry_sample_count = 0;
+        var expected_services: ?u64 = null;
+        var benchmark_ok = true;
+        var phase_index: u8 = 0;
+        while (phase_index < measurement.service_registry_phase_count) : (phase_index += 1) {
+            const phase: measurement.ServiceRegistryPhase = @enumFromInt(phase_index);
+            var repetition: u8 = 0;
+            while (repetition < self.config.repetitions) : (repetition += 1) {
+                const before = self.captureSummary() orelse return false;
+                if (!serviceRegistrySummaryContractOk(before)) return false;
+
+                var clock_start: r4os.abi.MonotonicClockInfo = .{};
+                if (!self.queryMonotonicClock(&clock_start)) return false;
+                var work = self.runServiceRegistryIterations(phase);
+                var clock_end: r4os.abi.MonotonicClockInfo = .{};
+                if (!self.queryMonotonicClock(&clock_end) or
+                    clock_end.generation != clock_start.generation or
+                    clock_end.instant_ns <= clock_start.instant_ns) return false;
+                const after = self.captureSummary() orelse return false;
+                if (!serviceRegistrySummaryContractOk(after)) return false;
+
+                if (expected_services) |service_count| {
+                    if (work.services_per_enumeration != service_count) work.errors +%= 1;
+                } else {
+                    expected_services = work.services_per_enumeration;
+                }
+
+                const sample = ServiceRegistrySample{
+                    .phase = phase,
+                    .repetition = repetition + 1,
+                    .iterations = measurement.service_registry_iterations_per_sample,
+                    .services_per_enumeration = work.services_per_enumeration,
+                    .entries = work.entries,
+                    .api_calls = work.api_calls,
+                    .api_end_markers = work.end_markers,
+                    .api_errors = work.errors,
+                    .elapsed_ns = clock_end.instant_ns - clock_start.instant_ns,
+                    .ns_per_enumeration = (clock_end.instant_ns - clock_start.instant_ns) /
+                        measurement.service_registry_iterations_per_sample,
+                    .index_queries = counterDelta(before.service_registry_index_queries, after.service_registry_index_queries),
+                    .refresh_requests = counterDelta(before.service_registry_refresh_requests, after.service_registry_refresh_requests),
+                    .refresh_visits = counterDelta(before.service_registry_refresh_visits, after.service_registry_refresh_visits),
+                    .instance_lookups = counterDelta(before.service_registry_instance_lookups, after.service_registry_instance_lookups),
+                    .counter_end_markers = counterDelta(before.service_registry_index_end_markers, after.service_registry_index_end_markers),
+                    .legacy_reference_refresh_visits = work.api_calls * work.services_per_enumeration,
+                    .checksum = work.checksum,
+                };
+                self.stats.service_registry_samples[self.stats.service_registry_sample_count] = sample;
+                self.stats.service_registry_sample_count += 1;
+                service_registry_benchmark_sink +%= sample.checksum;
+
+                const sample_ok = sample.services_per_enumeration > 0 and
+                    sample.api_errors == 0 and
+                    sample.entries == sample.services_per_enumeration * sample.iterations and
+                    sample.api_calls == sample.entries + sample.api_end_markers and
+                    sample.api_end_markers == sample.iterations and
+                    sample.index_queries == sample.api_calls and
+                    sample.refresh_requests == sample.entries and
+                    sample.refresh_visits == sample.entries and
+                    sample.instance_lookups <= sample.entries and
+                    sample.counter_end_markers == sample.api_end_markers and
+                    sample.legacy_reference_refresh_visits > sample.refresh_visits;
+                benchmark_ok = sample_ok and benchmark_ok;
+            }
+        }
+        return benchmark_ok and
+            self.stats.service_registry_sample_count == measurement.service_registry_phase_count * self.config.repetitions;
+    }
+
+    fn runServiceRegistryIterations(self: *App, phase: measurement.ServiceRegistryPhase) ServiceRegistryWork {
+        var work: ServiceRegistryWork = .{};
+        var iteration: u64 = 0;
+        while (iteration < measurement.service_registry_iterations_per_sample) : (iteration += 1) {
+            const entries_before = work.entries;
+            var index: u32 = 0;
+            var ended = false;
+            while (index <= service_registry_max_entries) {
+                var rc: i32 = 0;
+                switch (phase) {
+                    .service_info => {
+                        var info: r4os.abi.ServiceInfo = .{};
+                        rc = self.sys.serviceInfo(index, &info);
+                        if (rc > 0) consumeServiceInfo(&work.checksum, &info, false);
+                    },
+                    .service_detail => {
+                        var detail: r4os.abi.ServiceDetail = .{};
+                        rc = self.sys.serviceDetail(index, &detail);
+                        if (rc > 0) consumeServiceDetail(&work.checksum, &detail, false);
+                    },
+                    .servman_diag => {
+                        var detail: r4os.abi.ServiceDetail = .{};
+                        rc = self.sys.serviceDetail(index, &detail);
+                        if (rc > 0) consumeServiceDetail(&work.checksum, &detail, true);
+                    },
+                }
+                work.api_calls +%= 1;
+                if (rc < 0) {
+                    work.errors +%= 1;
+                    break;
+                }
+                if (rc == 0) {
+                    work.end_markers +%= 1;
+                    ended = true;
+                    break;
+                }
+                work.entries +%= 1;
+                if (index >= service_registry_max_entries) {
+                    work.errors +%= 1;
+                    break;
+                }
+                index += 1;
+            }
+            if (!ended) work.errors +%= 1;
+            const entries_this_iteration = work.entries - entries_before;
+            if (iteration == 0) {
+                work.services_per_enumeration = entries_this_iteration;
+            } else if (entries_this_iteration != work.services_per_enumeration) {
+                work.errors +%= 1;
+            }
+        }
+        return work;
+    }
+
+    fn printServiceRegistryResults(self: *App) void {
+        var index: usize = 0;
+        while (index < self.stats.service_registry_sample_count) : (index += 1) {
+            const sample = self.stats.service_registry_samples[index];
+            self.sys.write("  Registry phase=");
+            self.sys.write(sample.phase.name());
+            self.sys.write(" sample=");
+            self.sys.printU64(sample.repetition);
+            self.sys.write(" iterations=");
+            self.sys.printU64(sample.iterations);
+            self.sys.write(" services=");
+            self.sys.printU64(sample.services_per_enumeration);
+            self.sys.write(" calls=");
+            self.sys.printU64(sample.api_calls);
+            self.sys.write(" visits=");
+            self.sys.printU64(sample.refresh_visits);
+            self.sys.write(" legacyVisits=");
+            self.sys.printU64(sample.legacy_reference_refresh_visits);
+            self.sys.write(" instanceLookups=");
+            self.sys.printU64(sample.instance_lookups);
+            self.sys.write(" end=");
+            self.sys.printU64(sample.api_end_markers);
+            self.sys.write(" errors=");
+            self.sys.printU64(sample.api_errors);
+            self.sys.write(" elapsedNs=");
+            self.sys.printU64(sample.elapsed_ns);
+            self.sys.write(" ns/enumeration=");
+            self.sys.printU64(sample.ns_per_enumeration);
+            self.sys.println("");
+        }
+
+        var phase_index: u8 = 0;
+        while (phase_index < measurement.service_registry_phase_count) : (phase_index += 1) {
+            const phase: measurement.ServiceRegistryPhase = @enumFromInt(phase_index);
+            var costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+            var count: usize = 0;
+            index = 0;
+            while (index < self.stats.service_registry_sample_count) : (index += 1) {
+                const sample = self.stats.service_registry_samples[index];
+                if (sample.phase != phase) continue;
+                costs[count] = sample.ns_per_enumeration;
+                count += 1;
+            }
+            if (count == 0) continue;
+            const distribution = measurement.summarize(costs[0..count]);
+            self.sys.write("  Registry distribution phase=");
+            self.sys.write(phase.name());
+            self.sys.write(" ns/enumeration: n=");
+            self.sys.printU64(distribution.count);
+            self.sys.write(" min=");
+            self.sys.printU64(distribution.minimum);
+            self.sys.write(" p50=");
+            self.sys.printU64(distribution.p50);
+            self.sys.write(" p95=");
+            self.sys.printU64(distribution.p95);
+            self.sys.write(" p99=");
+            self.sys.printU64(distribution.p99);
+            self.sys.write(" max=");
+            self.sys.printU64(distribution.maximum);
+            self.sys.write(" mean=");
+            self.sys.printU64(distribution.mean);
+            self.sys.println("");
+        }
     }
 
     fn probeAudioLatency(self: *App) bool {
@@ -4545,6 +4858,65 @@ fn bytesEq(a: []const u8, b: []const u8) bool {
 
 fn delta(after: u64, before: u64) u64 {
     return if (after >= before) after - before else 0;
+}
+
+fn counterDelta(before: u64, after: u64) u64 {
+    return after -% before;
+}
+
+fn reductionBasisPoints(reference: u64, current: u64) u64 {
+    if (reference == 0 or current >= reference) return 0;
+    return @intCast((@as(u128, reference - current) * 10_000) / reference);
+}
+
+fn serviceRegistrySummaryContractOk(summary: r4os.abi.ProgramPerformanceSummary) bool {
+    const required_size = @offsetOf(r4os.abi.ProgramPerformanceSummary, "service_registry_index_end_markers") +
+        @sizeOf(u64);
+    return summary.version >= 7 and summary.size >= required_size;
+}
+
+fn mixServiceRegistryValue(hash: *u64, value: u64) void {
+    hash.* = (hash.* ^ value) *% 0x100000001b3;
+}
+
+fn mixServiceRegistryBytes(hash: *u64, raw: []const u8) void {
+    const value = spanZ(raw);
+    mixServiceRegistryValue(hash, value.len);
+    for (value) |byte| mixServiceRegistryValue(hash, byte);
+}
+
+fn consumeServiceInfo(hash: *u64, info: *const r4os.abi.ServiceInfo, servman_diag: bool) void {
+    mixServiceRegistryValue(hash, info.handle);
+    mixServiceRegistryValue(hash, info.state);
+    mixServiceRegistryValue(hash, info.start_mode);
+    mixServiceRegistryValue(hash, info.flags);
+    mixServiceRegistryValue(hash, info.instance_id);
+    mixServiceRegistryBytes(hash, info.name[0..]);
+    if (!servman_diag) return;
+    mixServiceRegistryValue(hash, @bitCast(@as(i64, info.exit_code)));
+    mixServiceRegistryValue(hash, info.restart_count);
+    mixServiceRegistryValue(hash, info.start_tick);
+    mixServiceRegistryValue(hash, info.uptime_ticks);
+    mixServiceRegistryValue(hash, info.requests);
+    mixServiceRegistryValue(hash, info.responses);
+    mixServiceRegistryValue(hash, info.drops);
+    mixServiceRegistryValue(hash, info.queue_depth);
+    mixServiceRegistryValue(hash, info.queue_used);
+    mixServiceRegistryValue(hash, info.queue_high_water);
+    mixServiceRegistryValue(hash, info.active_workers);
+    mixServiceRegistryValue(hash, info.max_active_workers);
+    mixServiceRegistryValue(hash, info.open_handles);
+    mixServiceRegistryValue(hash, info.busy_rejections);
+    mixServiceRegistryValue(hash, info.timeouts);
+    mixServiceRegistryValue(hash, info.cancellations);
+    mixServiceRegistryBytes(hash, info.last_error[0..]);
+}
+
+fn consumeServiceDetail(hash: *u64, detail: *const r4os.abi.ServiceDetail, servman_diag: bool) void {
+    consumeServiceInfo(hash, &detail.info, servman_diag);
+    mixServiceRegistryBytes(hash, detail.path[0..]);
+    mixServiceRegistryBytes(hash, detail.args[0..]);
+    mixServiceRegistryBytes(hash, detail.description[0..]);
 }
 
 fn pagefileBlockersOk(blockers: u32) bool {

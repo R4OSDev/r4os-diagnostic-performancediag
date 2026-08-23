@@ -1,12 +1,14 @@
 const std = @import("std");
 
 pub const result_schema = "r4os.perfdiag.ndjson";
-pub const result_schema_version: u32 = 2;
+pub const result_schema_version: u32 = 3;
 pub const default_repetitions: u8 = 5;
 pub const min_repetitions: u8 = 3;
 pub const max_repetitions: u8 = 20;
 pub const blit_min_duration_ms: u64 = 250;
 pub const clock_calls_per_sample: u64 = 10_000;
+pub const service_registry_iterations_per_sample: u64 = 100;
+pub const service_registry_phase_count: usize = 3;
 pub const bytes_per_kb: u64 = 1024;
 pub const kb_per_mb: u64 = 1024;
 pub const bytes_per_mb: u64 = bytes_per_kb * kb_per_mb;
@@ -42,11 +44,27 @@ pub const CacheState = enum {
 pub const BenchmarkKind = enum {
     blit,
     clock,
+    service_registry,
 
     pub fn name(self: BenchmarkKind) []const u8 {
         return switch (self) {
             .blit => "blit",
             .clock => "clock",
+            .service_registry => "service-registry",
+        };
+    }
+};
+
+pub const ServiceRegistryPhase = enum(u8) {
+    service_info,
+    service_detail,
+    servman_diag,
+
+    pub fn name(self: ServiceRegistryPhase) []const u8 {
+        return switch (self) {
+            .service_info => "service-info",
+            .service_detail => "service-detail",
+            .servman_diag => "servman-diag",
         };
     }
 };
@@ -114,6 +132,9 @@ pub fn parseArgs(args: []const u8) Config {
         } else if (equalsIgnoreCase(token, "/CLOCK")) {
             selectMode(&config, .benchmark);
             selectBenchmark(&config, .clock);
+        } else if (equalsIgnoreCase(token, "/SERVICE-REGISTRY")) {
+            selectMode(&config, .benchmark);
+            selectBenchmark(&config, .service_registry);
         } else if (equalsIgnoreCase(token, "/COLD")) {
             selectCacheState(&config, .cold);
         } else if (equalsIgnoreCase(token, "/WARM")) {
@@ -270,6 +291,15 @@ test "arguments select the monotonic clock benchmark" {
     try std.testing.expectEqual(Mode.benchmark, config.mode);
     try std.testing.expectEqual(BenchmarkKind.clock, config.benchmark_kind);
     try std.testing.expectEqual(@as(u8, 3), config.repetitions);
+}
+
+test "arguments select the service registry benchmark" {
+    const config = parseArgs("/benchmark /service-registry /repeat=5 /warm");
+    try std.testing.expect(config.valid());
+    try std.testing.expectEqual(Mode.benchmark, config.mode);
+    try std.testing.expectEqual(BenchmarkKind.service_registry, config.benchmark_kind);
+    try std.testing.expectEqual(CacheState.warm, config.cache_state);
+    try std.testing.expectEqual(@as(u8, 5), config.repetitions);
 }
 
 test "arguments reject conflicting modes states and repetition bounds" {

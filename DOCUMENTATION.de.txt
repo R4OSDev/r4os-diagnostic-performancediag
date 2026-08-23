@@ -15,6 +15,12 @@ PERFDIAG trennt passive Aufnahme, Vertragskonformitaet und Benchmark:
   hochaufloesenden monotonen R4SYS-Uhr. Jede Wiederholung umfasst 10000
   Abfragen und meldet verstrichene Nanosekunden, Nanosekunden je Aufruf,
   kleinsten positiven Abstand, Null-Deltas und Rueckschritte.
+- /BENCHMARK /SERVICE-REGISTRY misst pro Wiederholung je 100 vollstaendige
+  ServiceInfo-, ServiceDetail- und SERVMAN-DIAG-aequivalente Enumerationen.
+  API-Aufrufe, angeforderte und tatsaechliche Refreshbesuche,
+  Programminstanzlookups, Endemarkierungen, Laufzeiten und die exakt aus der
+  Istbelegung berechnete quadratische Legacy-Arbeitsmenge werden getrennt
+  ausgegeben. PerformanceSummary-Abfragen liegen ausserhalb der Messschleife.
 
 Der Konformitaetsmodus prueft den aktuellen R4DEV-Performancevertrag und
 fachliche Subsystemwerte:
@@ -42,7 +48,7 @@ p50, p95, p99, Maximum und Mittel aus, so dass auch kleine reproduzierbare
 Verbesserungen bewertet werden koennen.
 
 Die menschenlesbare Ausgabe endet mit einem abgegrenzten, versionierten
-NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 2. Er enthaelt Modus,
+NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 3. Er enthaelt Modus,
 Modul-, Kernel- und API-Version, Clockquelle und -qualitaet, Ereignisbackend
 und rationale Rate, Kalt-/Warmstatus, Wiederholungen, Rohwerte, Einheiten,
 Checks, fehlende Messklassen und die beobachteten Eigenkosten aller

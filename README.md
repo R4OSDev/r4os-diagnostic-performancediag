@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.3`
+- Version: `0.3.4`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -32,12 +32,17 @@ modes are:
     PERFDIAG /BENCHMARK /BLIT /REPEAT:5 /COLD
     PERFDIAG /BENCHMARK /BLIT /REPEAT:5 /WARM
     PERFDIAG /BENCHMARK /CLOCK /REPEAT:5 /WARM
+    PERFDIAG /BENCHMARK /SERVICE-REGISTRY /REPEAT:5 /WARM
 
 `/BASELINE` captures a summary before any optional workload. `/CONFORMANCE`
 runs the state-changing contract probes and does not claim a performance
 threshold. `/BENCHMARK /BLIT` runs only the repeated display workload, while
 `/BENCHMARK /CLOCK` measures 10,000 high-resolution monotonic-clock queries
-per sample. Every successful run ends with a delimited, versioned NDJSON v2
+per sample. `/BENCHMARK /SERVICE-REGISTRY` measures 100 complete enumerations
+per sample in separate ServiceInfo, ServiceDetail, and ServiceManager-DIAG-
+equivalent phases. It records API calls, refresh visits, program-instance
+lookups, end markers, elapsed time, and the exact legacy quadratic work
+reference. Every successful run ends with a delimited, versioned NDJSON v3
 result block containing clock source and quality, the event backend and exact
 rate, run metadata, raw samples, distributions, checks, missing measurement
 flags, and measured summary-query overhead.
