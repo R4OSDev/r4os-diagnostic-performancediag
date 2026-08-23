@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const result_schema = "r4os.perfdiag.ndjson";
-pub const result_schema_version: u32 = 4;
+pub const result_schema_version: u32 = 5;
 pub const default_repetitions: u8 = 5;
 pub const min_repetitions: u8 = 3;
 pub const max_repetitions: u8 = 20;
@@ -15,6 +15,10 @@ pub const kernel_ipc_small_error_requests_per_iteration: u64 = 4;
 pub const kernel_ipc_small_requests_per_iteration: u64 = kernel_ipc_status_requests_per_iteration + kernel_ipc_small_error_requests_per_iteration;
 pub const kernel_ipc_max_requests_per_iteration: u64 = 1;
 pub const kernel_ipc_requests_per_iteration: u64 = kernel_ipc_small_requests_per_iteration + kernel_ipc_max_requests_per_iteration;
+pub const driver_work_owner_capacity: usize = 16;
+pub const driver_work_audio_writes_per_sample: u64 = 8;
+pub const driver_work_audio_bytes_per_write: usize = 4096;
+pub const driver_work_audio_write_spacing_ms: u64 = 25;
 pub const bytes_per_kb: u64 = 1024;
 pub const kb_per_mb: u64 = 1024;
 pub const bytes_per_mb: u64 = bytes_per_kb * kb_per_mb;
@@ -52,6 +56,7 @@ pub const BenchmarkKind = enum {
     clock,
     service_registry,
     kernel_ipc,
+    driver_work,
 
     pub fn name(self: BenchmarkKind) []const u8 {
         return switch (self) {
@@ -59,6 +64,7 @@ pub const BenchmarkKind = enum {
             .clock => "clock",
             .service_registry => "service-registry",
             .kernel_ipc => "kernel-ipc",
+            .driver_work => "driver-work",
         };
     }
 };
@@ -146,6 +152,9 @@ pub fn parseArgs(args: []const u8) Config {
         } else if (equalsIgnoreCase(token, "/KERNEL-IPC")) {
             selectMode(&config, .benchmark);
             selectBenchmark(&config, .kernel_ipc);
+        } else if (equalsIgnoreCase(token, "/DRIVER-WORK")) {
+            selectMode(&config, .benchmark);
+            selectBenchmark(&config, .driver_work);
         } else if (equalsIgnoreCase(token, "/COLD")) {
             selectCacheState(&config, .cold);
         } else if (equalsIgnoreCase(token, "/WARM")) {
@@ -318,6 +327,15 @@ test "arguments select the kernel IPC benchmark" {
     try std.testing.expect(config.valid());
     try std.testing.expectEqual(Mode.benchmark, config.mode);
     try std.testing.expectEqual(BenchmarkKind.kernel_ipc, config.benchmark_kind);
+    try std.testing.expectEqual(CacheState.warm, config.cache_state);
+    try std.testing.expectEqual(@as(u8, 5), config.repetitions);
+}
+
+test "arguments select the driver work benchmark" {
+    const config = parseArgs("/benchmark /driver-work /repeat=5 /warm");
+    try std.testing.expect(config.valid());
+    try std.testing.expectEqual(Mode.benchmark, config.mode);
+    try std.testing.expectEqual(BenchmarkKind.driver_work, config.benchmark_kind);
     try std.testing.expectEqual(CacheState.warm, config.cache_state);
     try std.testing.expectEqual(@as(u8, 5), config.repetitions);
 }

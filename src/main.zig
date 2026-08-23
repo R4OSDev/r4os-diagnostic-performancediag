@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.5";
+const module_version = "0.3.6";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -23,6 +23,7 @@ var preemption_worker_stop: u32 = 0;
 var avx_worker_results: [2]u32 = .{ 0, 0 };
 // 0.56.12: Frame-Puffer fuer den Blit-Durchsatz-Benchmark (320x64 XRGB).
 var blit_bench_frame: [320 * 64]u32 = .{0} ** (320 * 64);
+var driver_work_bench_pcm: [measurement.driver_work_audio_bytes_per_write]u8 = .{0} ** measurement.driver_work_audio_bytes_per_write;
 const max_check_results = 256;
 const max_service_registry_samples = measurement.service_registry_phase_count * measurement.max_repetitions;
 const service_registry_max_entries: u32 = 64;
@@ -122,6 +123,96 @@ const KernelIpcSample = struct {
     queue_used_after: u32 = 0,
 };
 
+const DriverWorkSample = struct {
+    repetition: u8 = 0,
+    owner: u32 = 0,
+    audio_writes: u64 = 0,
+    audio_bytes: u64 = 0,
+    submitted: u64 = 0,
+    submitted_actual_irq: u64 = 0,
+    submitted_actual_task: u64 = 0,
+    submitted_irq_class: u64 = 0,
+    submitted_task_class: u64 = 0,
+    started: u64 = 0,
+    completed: u64 = 0,
+    failed: u64 = 0,
+    cancelled: u64 = 0,
+    dropped: u64 = 0,
+    full_rejections: u64 = 0,
+    retained_full_rejections: u64 = 0,
+    releases: u64 = 0,
+    release_busy: u64 = 0,
+    release_wakes: u64 = 0,
+    publication_pending_releases: u64 = 0,
+    waiter_blocked_releases: u64 = 0,
+    claimed_releases: u64 = 0,
+    invalid_handles: u64 = 0,
+    stale_handles: u64 = 0,
+    wait_timeouts: u64 = 0,
+    wait_failed: u64 = 0,
+    wake_publications: u64 = 0,
+    wake_waiters: u64 = 0,
+    wake_misses: u64 = 0,
+    selection_irq: u64 = 0,
+    selection_task: u64 = 0,
+    selection_irq_preferred: u64 = 0,
+    selection_task_fairness: u64 = 0,
+    queue_total_ns: u64 = 0,
+    queue_ns_per_started: u64 = 0,
+    queue_max_before_ns: u64 = 0,
+    queue_max_after_ns: u64 = 0,
+    run_total_ns: u64 = 0,
+    run_ns_per_completed: u64 = 0,
+    run_max_before_ns: u64 = 0,
+    run_max_after_ns: u64 = 0,
+    e2e_total_ns: u64 = 0,
+    e2e_ns_per_completed: u64 = 0,
+    e2e_max_before_ns: u64 = 0,
+    e2e_max_after_ns: u64 = 0,
+    timing_unavailable: u64 = 0,
+    completion_age_current_ns_after: u64 = 0,
+    completion_age_max_ns_after: u64 = 0,
+    scan_passes: u64 = 0,
+    scan_slots: u64 = 0,
+    critical_sections: u64 = 0,
+    critical_from_irq: u64 = 0,
+    critical_total_ns: u64 = 0,
+    critical_max_before_ns: u64 = 0,
+    critical_max_after_ns: u64 = 0,
+    critical_timing_samples: u64 = 0,
+    critical_timing_unavailable: u64 = 0,
+    waiter_enrollments: u64 = 0,
+    waiter_wake_returns: u64 = 0,
+    long_callbacks: u64 = 0,
+    cleanup_calls: u64 = 0,
+    cleanup_quiesced: u64 = 0,
+    cleanup_failed_context: u64 = 0,
+    cleanup_queued_cancelled: u64 = 0,
+    cleanup_waits: u64 = 0,
+    cleanup_wait_timeouts: u64 = 0,
+    cleanup_wait_failures: u64 = 0,
+    cleanup_released: u64 = 0,
+    cleanup_late_finishes: u64 = 0,
+    cleanup_scan_passes: u64 = 0,
+    cleanup_scan_slots: u64 = 0,
+    free_slots_after: u32 = 0,
+    used_slots_after: u32 = 0,
+    queued_slots_after: u32 = 0,
+    running_slots_after: u32 = 0,
+    completed_slots_after: u32 = 0,
+    cancelled_slots_after: u32 = 0,
+    queue_high_water_after: u32 = 0,
+    used_high_water_after: u32 = 0,
+    retained_high_water_after: u32 = 0,
+    waiters_current_after: u32 = 0,
+    waiters_max_after: u32 = 0,
+    owner_used_slots_after: u32 = 0,
+    owner_used_high_water_after: u32 = 0,
+    owner_retained_high_water_after: u32 = 0,
+    owner_waiters_current_after: u32 = 0,
+    owner_waiters_max_after: u32 = 0,
+};
+
 const RunStats = struct {
     summary_query_attempts: u32 = 0,
     summary_query_successes: u32 = 0,
@@ -139,6 +230,8 @@ const RunStats = struct {
     service_registry_sample_count: usize = 0,
     kernel_ipc_samples: [measurement.max_repetitions]KernelIpcSample = .{KernelIpcSample{}} ** measurement.max_repetitions,
     kernel_ipc_sample_count: usize = 0,
+    driver_work_samples: [measurement.max_repetitions]DriverWorkSample = .{DriverWorkSample{}} ** measurement.max_repetitions,
+    driver_work_sample_count: usize = 0,
 };
 const avx_pattern_a: [32]u8 align(32) = .{
     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
@@ -180,6 +273,48 @@ fn storagePerformanceOk(info: r4os.abi.ProgramStoragePerformanceInfo) bool {
         info.completion_waits != 0 and
         info.completion_signals != 0 and
         completion_path_ok;
+}
+
+fn prepareDriverWorkPcm() void {
+    var frame: usize = 0;
+    while (frame < driver_work_bench_pcm.len / 4) : (frame += 1) {
+        const sample: i16 = if (((frame / 48) & 1) == 0) 1200 else -1200;
+        const bits: u16 = @bitCast(sample);
+        const offset = frame * 4;
+        driver_work_bench_pcm[offset] = @intCast(bits & 0xFF);
+        driver_work_bench_pcm[offset + 1] = @intCast(bits >> 8);
+        driver_work_bench_pcm[offset + 2] = driver_work_bench_pcm[offset];
+        driver_work_bench_pcm[offset + 3] = driver_work_bench_pcm[offset + 1];
+    }
+}
+
+fn driverWorkSlotAccountingOk(info: r4os.abi.ProgramDriverWorkPerformanceInfo) bool {
+    return info.free_slots + info.used_slots == info.queue_capacity and
+        info.used_slots == info.queued_slots + info.running_slots + info.completed_slots + info.cancelled_slots and
+        info.queued_slots == info.irq_queued_slots + info.task_queued_slots and
+        info.queue_high_water <= info.queue_capacity and
+        info.used_high_water <= info.queue_capacity and
+        info.retained_high_water <= info.queue_capacity;
+}
+
+fn driverWorkSnapshotContractOk(info: r4os.abi.ProgramDriverWorkPerformanceInfo) bool {
+    const selected_owner_ok = info.selected_owner <= measurement.driver_work_owner_capacity;
+    const owner_accounting_ok = info.selected_owner == 0 or
+        (info.owner_used_slots == info.owner_queued_slots + info.owner_running_slots +
+            info.owner_completed_slots + info.owner_cancelled_slots and
+            info.owner_queued_slots == info.owner_irq_queued_slots + info.owner_task_queued_slots and
+            info.owner_used_high_water <= info.queue_capacity and
+            info.owner_retained_high_water <= info.queue_capacity);
+    return info.version >= 1 and
+        info.size >= @sizeOf(r4os.abi.ProgramDriverWorkPerformanceInfo) and
+        info.initialized != 0 and
+        info.worker_started != 0 and
+        info.worker_count == 1 and
+        info.queue_capacity >= r4os.abi.driver_work_queue_capacity and
+        info.irq_burst_limit > 0 and
+        selected_owner_ok and
+        owner_accounting_ok and
+        driverWorkSlotAccountingOk(info);
 }
 
 const App = struct {
@@ -253,6 +388,7 @@ const App = struct {
                     .clock => self.probeMonotonicClock(),
                     .service_registry => self.probeServiceRegistry(),
                     .kernel_ipc => self.probeKernelIpc(),
+                    .driver_work => self.probeDriverWork(),
                 };
                 if (self.captureSummary()) |summary| {
                     post_summary = summary;
@@ -277,6 +413,10 @@ const App = struct {
                     .kernel_ipc => {
                         self.printKernelIpcResults();
                         self.printCheck("Kernel channel IPC benchmark", ok);
+                    },
+                    .driver_work => {
+                        self.printDriverWorkResults();
+                        self.printCheck("Driver workqueue benchmark", ok);
                     },
                 }
             },
@@ -394,6 +534,7 @@ const App = struct {
         self.sys.println("  PERFDIAG /BENCHMARK /CLOCK /REPEAT:5 /WARM");
         self.sys.println("  PERFDIAG /BENCHMARK /SERVICE-REGISTRY /REPEAT:5 /WARM");
         self.sys.println("  PERFDIAG /BENCHMARK /KERNEL-IPC /REPEAT:5 /WARM");
+        self.sys.println("  PERFDIAG /BENCHMARK /DRIVER-WORK /REPEAT:5 /WARM");
         self.sys.println("No mode runs the passive baseline. Repetitions: 3..20.");
     }
 
@@ -697,6 +838,7 @@ const App = struct {
             self.sys.println("}");
         }
         self.printKernelIpcMachineResults();
+        self.printDriverWorkMachineResults();
 
         self.machineLinePrefix("observer");
         self.sys.write(",\"summary_query_attempts\":");
@@ -795,6 +937,128 @@ const App = struct {
         self.sys.println("}");
     }
 
+    fn printDriverWorkMachineResults(self: *App) void {
+        if (self.stats.driver_work_sample_count == 0) return;
+        var queue_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var run_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var e2e_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.driver_work_sample_count) : (index += 1) {
+            const sample = self.stats.driver_work_samples[index];
+            queue_costs[index] = sample.queue_ns_per_started;
+            run_costs[index] = sample.run_ns_per_completed;
+            e2e_costs[index] = sample.e2e_ns_per_completed;
+            self.machineLinePrefix("driver_work_sample");
+            self.printJsonU64Field("sample", sample.repetition);
+            self.printJsonU64Field("owner", sample.owner);
+            self.printJsonU64Field("audio_writes", sample.audio_writes);
+            self.printJsonU64Field("audio_bytes", sample.audio_bytes);
+            self.printJsonU64Field("submitted", sample.submitted);
+            self.printJsonU64Field("submitted_actual_irq", sample.submitted_actual_irq);
+            self.printJsonU64Field("submitted_actual_task", sample.submitted_actual_task);
+            self.printJsonU64Field("submitted_irq_class", sample.submitted_irq_class);
+            self.printJsonU64Field("submitted_task_class", sample.submitted_task_class);
+            self.printJsonU64Field("started", sample.started);
+            self.printJsonU64Field("completed", sample.completed);
+            self.printJsonU64Field("cancelled", sample.cancelled);
+            self.printJsonU64Field("failed", sample.failed);
+            self.printJsonU64Field("dropped", sample.dropped);
+            self.printJsonU64Field("full_rejections", sample.full_rejections);
+            self.printJsonU64Field("retained_full_rejections", sample.retained_full_rejections);
+            self.printJsonU64Field("releases", sample.releases);
+            self.printJsonU64Field("release_busy", sample.release_busy);
+            self.printJsonU64Field("release_wakes", sample.release_wakes);
+            self.printJsonU64Field("publication_pending_releases", sample.publication_pending_releases);
+            self.printJsonU64Field("waiter_blocked_releases", sample.waiter_blocked_releases);
+            self.printJsonU64Field("claimed_releases", sample.claimed_releases);
+            self.printJsonU64Field("invalid_handles", sample.invalid_handles);
+            self.printJsonU64Field("stale_handles", sample.stale_handles);
+            self.printJsonU64Field("wait_timeouts", sample.wait_timeouts);
+            self.printJsonU64Field("wait_failed", sample.wait_failed);
+            self.printJsonU64Field("wake_publications", sample.wake_publications);
+            self.printJsonU64Field("wake_waiters", sample.wake_waiters);
+            self.printJsonU64Field("wake_misses", sample.wake_misses);
+            self.printJsonU64Field("selection_irq", sample.selection_irq);
+            self.printJsonU64Field("selection_task", sample.selection_task);
+            self.printJsonU64Field("selection_irq_preferred", sample.selection_irq_preferred);
+            self.printJsonU64Field("selection_task_fairness", sample.selection_task_fairness);
+            self.printJsonU64Field("queue_total_ns", sample.queue_total_ns);
+            self.printJsonU64Field("queue_ns_per_started", sample.queue_ns_per_started);
+            self.printJsonU64Field("queue_max_before_ns", sample.queue_max_before_ns);
+            self.printJsonU64Field("queue_max_after_ns", sample.queue_max_after_ns);
+            self.printJsonU64Field("run_total_ns", sample.run_total_ns);
+            self.printJsonU64Field("run_ns_per_completed", sample.run_ns_per_completed);
+            self.printJsonU64Field("run_max_before_ns", sample.run_max_before_ns);
+            self.printJsonU64Field("run_max_after_ns", sample.run_max_after_ns);
+            self.printJsonU64Field("e2e_total_ns", sample.e2e_total_ns);
+            self.printJsonU64Field("e2e_ns_per_completed", sample.e2e_ns_per_completed);
+            self.printJsonU64Field("e2e_max_before_ns", sample.e2e_max_before_ns);
+            self.printJsonU64Field("e2e_max_after_ns", sample.e2e_max_after_ns);
+            self.printJsonU64Field("timing_unavailable", sample.timing_unavailable);
+            self.printJsonU64Field("completion_age_current_ns_after", sample.completion_age_current_ns_after);
+            self.printJsonU64Field("completion_age_max_ns_after", sample.completion_age_max_ns_after);
+            self.printJsonU64Field("scan_passes", sample.scan_passes);
+            self.printJsonU64Field("scan_slots", sample.scan_slots);
+            self.printJsonU64Field("critical_sections", sample.critical_sections);
+            self.printJsonU64Field("critical_from_irq", sample.critical_from_irq);
+            self.printJsonU64Field("critical_total_ns", sample.critical_total_ns);
+            self.printJsonU64Field("critical_max_before_ns", sample.critical_max_before_ns);
+            self.printJsonU64Field("critical_max_after_ns", sample.critical_max_after_ns);
+            self.printJsonU64Field("critical_timing_samples", sample.critical_timing_samples);
+            self.printJsonU64Field("critical_timing_unavailable", sample.critical_timing_unavailable);
+            self.printJsonU64Field("waiter_enrollments", sample.waiter_enrollments);
+            self.printJsonU64Field("waiter_wake_returns", sample.waiter_wake_returns);
+            self.printJsonU64Field("long_callbacks", sample.long_callbacks);
+            self.printJsonU64Field("cleanup_calls", sample.cleanup_calls);
+            self.printJsonU64Field("cleanup_quiesced", sample.cleanup_quiesced);
+            self.printJsonU64Field("cleanup_failed_context", sample.cleanup_failed_context);
+            self.printJsonU64Field("cleanup_queued_cancelled", sample.cleanup_queued_cancelled);
+            self.printJsonU64Field("cleanup_waits", sample.cleanup_waits);
+            self.printJsonU64Field("cleanup_wait_timeouts", sample.cleanup_wait_timeouts);
+            self.printJsonU64Field("cleanup_wait_failures", sample.cleanup_wait_failures);
+            self.printJsonU64Field("cleanup_released", sample.cleanup_released);
+            self.printJsonU64Field("cleanup_late_finishes", sample.cleanup_late_finishes);
+            self.printJsonU64Field("cleanup_scan_passes", sample.cleanup_scan_passes);
+            self.printJsonU64Field("cleanup_scan_slots", sample.cleanup_scan_slots);
+            self.printJsonU64Field("free_slots_after", sample.free_slots_after);
+            self.printJsonU64Field("used_slots_after", sample.used_slots_after);
+            self.printJsonU64Field("queued_slots_after", sample.queued_slots_after);
+            self.printJsonU64Field("running_slots_after", sample.running_slots_after);
+            self.printJsonU64Field("completed_slots_after", sample.completed_slots_after);
+            self.printJsonU64Field("cancelled_slots_after", sample.cancelled_slots_after);
+            self.printJsonU64Field("queue_high_water_after", sample.queue_high_water_after);
+            self.printJsonU64Field("used_high_water_after", sample.used_high_water_after);
+            self.printJsonU64Field("retained_high_water_after", sample.retained_high_water_after);
+            self.printJsonU64Field("waiters_current_after", sample.waiters_current_after);
+            self.printJsonU64Field("waiters_max_after", sample.waiters_max_after);
+            self.printJsonU64Field("owner_used_slots_after", sample.owner_used_slots_after);
+            self.printJsonU64Field("owner_used_high_water_after", sample.owner_used_high_water_after);
+            self.printJsonU64Field("owner_retained_high_water_after", sample.owner_retained_high_water_after);
+            self.printJsonU64Field("owner_waiters_current_after", sample.owner_waiters_current_after);
+            self.printJsonU64Field("owner_waiters_max_after", sample.owner_waiters_max_after);
+            self.sys.println("}");
+        }
+        self.printDriverWorkMachineDistribution("queue", queue_costs[0..self.stats.driver_work_sample_count]);
+        self.printDriverWorkMachineDistribution("run", run_costs[0..self.stats.driver_work_sample_count]);
+        self.printDriverWorkMachineDistribution("e2e", e2e_costs[0..self.stats.driver_work_sample_count]);
+    }
+
+    fn printDriverWorkMachineDistribution(self: *App, metric: []const u8, values: []const u64) void {
+        const distribution = measurement.summarize(values);
+        self.machineLinePrefix("driver_work_distribution");
+        self.sys.write(",\"metric\":");
+        self.printJsonString(metric);
+        self.sys.write(",\"unit\":\"ns/work\"");
+        self.printJsonU64Field("count", distribution.count);
+        self.printJsonU64Field("min", distribution.minimum);
+        self.printJsonU64Field("p50", distribution.p50);
+        self.printJsonU64Field("p95", distribution.p95);
+        self.printJsonU64Field("p99", distribution.p99);
+        self.printJsonU64Field("max", distribution.maximum);
+        self.printJsonU64Field("mean", distribution.mean);
+        self.sys.println("}");
+    }
+
     fn printJsonU64Field(self: *App, name: []const u8, value: u64) void {
         self.sys.write(",\"");
         self.sys.write(name);
@@ -837,6 +1101,7 @@ const App = struct {
             self.dev.hasFn("performance_summary") and
             self.dev.hasFn("performance_boot_phase_clock") and
             self.dev.hasFn("performance_irq_timing") and
+            self.dev.hasFn("performance_driver_work") and
             self.dev.hasFn("memory_reclaim_probe") and
             self.dev.hasFn("memory_backing_store_probe") and
             self.dev.hasFn("memory_backing_store_slot_probe") and
@@ -2473,6 +2738,303 @@ const App = struct {
         self.sys.println("");
     }
 
+    fn probeDriverWork(self: *App) bool {
+        if (!self.dev.hasFn("performance_driver_work")) return false;
+        prepareDriverWorkPcm();
+
+        var repetition: u8 = 0;
+        while (repetition < self.config.repetitions) : (repetition += 1) {
+            const aggregate_before = self.dev.performanceDriverWork(0) orelse return false;
+            if (!driverWorkSnapshotContractOk(aggregate_before)) return false;
+
+            var owner_before: [measurement.driver_work_owner_capacity]r4os.abi.ProgramDriverWorkPerformanceInfo =
+                .{r4os.abi.ProgramDriverWorkPerformanceInfo{}} ** measurement.driver_work_owner_capacity;
+            var owner_index: usize = 0;
+            while (owner_index < owner_before.len) : (owner_index += 1) {
+                owner_before[owner_index] = self.dev.performanceDriverWork(@intCast(owner_index + 1)) orelse return false;
+                if (!driverWorkSnapshotContractOk(owner_before[owner_index])) return false;
+            }
+
+            var audio_writes: u64 = 0;
+            var audio_bytes: u64 = 0;
+            if (!self.runDriverWorkAudioLoad(&audio_writes, &audio_bytes)) return false;
+
+            const aggregate_after = self.dev.performanceDriverWork(0) orelse return false;
+            if (!driverWorkSnapshotContractOk(aggregate_after)) return false;
+
+            var selected_owner: u32 = 0;
+            var selected_irq_delta: u64 = 0;
+            var selected_before: r4os.abi.ProgramDriverWorkPerformanceInfo = .{};
+            var selected_after: r4os.abi.ProgramDriverWorkPerformanceInfo = .{};
+            owner_index = 0;
+            while (owner_index < owner_before.len) : (owner_index += 1) {
+                const owner: u32 = @intCast(owner_index + 1);
+                const after = self.dev.performanceDriverWork(owner) orelse return false;
+                if (!driverWorkSnapshotContractOk(after)) return false;
+                const irq_delta = counterDelta(
+                    owner_before[owner_index].metrics.submitted_actual_irq,
+                    after.metrics.submitted_actual_irq,
+                );
+                if (irq_delta > selected_irq_delta) {
+                    selected_irq_delta = irq_delta;
+                    selected_owner = owner;
+                    selected_before = owner_before[owner_index];
+                    selected_after = after;
+                }
+            }
+            if (selected_owner == 0 or selected_irq_delta == 0) return false;
+
+            const before = selected_before.metrics;
+            const after = selected_after.metrics;
+            const started = counterDelta(before.started, after.started);
+            const completed = counterDelta(before.completed, after.completed);
+            const queue_total_ns = counterDelta(before.queue_total_ns, after.queue_total_ns);
+            const run_total_ns = counterDelta(before.run_total_ns, after.run_total_ns);
+            const e2e_total_ns = counterDelta(before.e2e_total_ns, after.e2e_total_ns);
+            const sample = DriverWorkSample{
+                .repetition = repetition + 1,
+                .owner = selected_owner,
+                .audio_writes = audio_writes,
+                .audio_bytes = audio_bytes,
+                .submitted = counterDelta(before.submitted, after.submitted),
+                .submitted_actual_irq = selected_irq_delta,
+                .submitted_actual_task = counterDelta(before.submitted_actual_task, after.submitted_actual_task),
+                .submitted_irq_class = counterDelta(before.submitted_irq_class, after.submitted_irq_class),
+                .submitted_task_class = counterDelta(before.submitted_task_class, after.submitted_task_class),
+                .started = started,
+                .completed = completed,
+                .failed = counterDelta(before.failed, after.failed),
+                .cancelled = counterDelta(before.cancelled, after.cancelled),
+                .dropped = counterDelta(before.dropped, after.dropped),
+                .full_rejections = counterDelta(before.full_rejections, after.full_rejections),
+                .retained_full_rejections = counterDelta(before.retained_full_rejections, after.retained_full_rejections),
+                .releases = counterDelta(before.releases, after.releases),
+                .release_busy = counterDelta(before.release_busy, after.release_busy),
+                .release_wakes = counterDelta(before.release_wakes, after.release_wakes),
+                .publication_pending_releases = counterDelta(before.publication_pending_releases, after.publication_pending_releases),
+                .waiter_blocked_releases = counterDelta(before.waiter_blocked_releases, after.waiter_blocked_releases),
+                .claimed_releases = counterDelta(before.claimed_releases, after.claimed_releases),
+                .invalid_handles = counterDelta(before.invalid_handles, after.invalid_handles),
+                .stale_handles = counterDelta(before.stale_handles, after.stale_handles),
+                .wait_timeouts = counterDelta(before.wait_timeouts, after.wait_timeouts),
+                .wait_failed = counterDelta(before.wait_failed, after.wait_failed),
+                .wake_publications = counterDelta(before.wake_publications, after.wake_publications),
+                .wake_waiters = counterDelta(before.wake_waiters, after.wake_waiters),
+                .wake_misses = counterDelta(before.wake_misses, after.wake_misses),
+                .selection_irq = counterDelta(before.selection_irq, after.selection_irq),
+                .selection_task = counterDelta(before.selection_task, after.selection_task),
+                .selection_irq_preferred = counterDelta(before.selection_irq_preferred, after.selection_irq_preferred),
+                .selection_task_fairness = counterDelta(before.selection_task_fairness, after.selection_task_fairness),
+                .queue_total_ns = queue_total_ns,
+                .queue_ns_per_started = if (started == 0) 0 else queue_total_ns / started,
+                .queue_max_before_ns = before.queue_max_ns,
+                .queue_max_after_ns = after.queue_max_ns,
+                .run_total_ns = run_total_ns,
+                .run_ns_per_completed = if (completed == 0) 0 else run_total_ns / completed,
+                .run_max_before_ns = before.run_max_ns,
+                .run_max_after_ns = after.run_max_ns,
+                .e2e_total_ns = e2e_total_ns,
+                .e2e_ns_per_completed = if (completed == 0) 0 else e2e_total_ns / completed,
+                .e2e_max_before_ns = before.e2e_max_ns,
+                .e2e_max_after_ns = after.e2e_max_ns,
+                .timing_unavailable = counterDelta(before.timing_unavailable, after.timing_unavailable),
+                .completion_age_current_ns_after = after.completion_age_current_ns,
+                .completion_age_max_ns_after = after.completion_age_max_ns,
+                .scan_passes = counterDelta(aggregate_before.metrics.scan_passes, aggregate_after.metrics.scan_passes),
+                .scan_slots = counterDelta(aggregate_before.metrics.scan_slots, aggregate_after.metrics.scan_slots),
+                .critical_sections = counterDelta(before.critical_sections, after.critical_sections),
+                .critical_from_irq = counterDelta(before.critical_from_irq, after.critical_from_irq),
+                .critical_total_ns = counterDelta(before.critical_total_ns, after.critical_total_ns),
+                .critical_max_before_ns = before.critical_max_ns,
+                .critical_max_after_ns = after.critical_max_ns,
+                .critical_timing_samples = counterDelta(before.critical_timing_samples, after.critical_timing_samples),
+                .critical_timing_unavailable = counterDelta(before.critical_timing_unavailable, after.critical_timing_unavailable),
+                .waiter_enrollments = counterDelta(before.waiter_enrollments, after.waiter_enrollments),
+                .waiter_wake_returns = counterDelta(before.waiter_wake_returns, after.waiter_wake_returns),
+                .long_callbacks = counterDelta(before.long_callbacks, after.long_callbacks),
+                .cleanup_calls = counterDelta(before.cleanup_calls, after.cleanup_calls),
+                .cleanup_quiesced = counterDelta(before.cleanup_quiesced, after.cleanup_quiesced),
+                .cleanup_failed_context = counterDelta(before.cleanup_failed_context, after.cleanup_failed_context),
+                .cleanup_queued_cancelled = counterDelta(before.cleanup_queued_cancelled, after.cleanup_queued_cancelled),
+                .cleanup_waits = counterDelta(before.cleanup_waits, after.cleanup_waits),
+                .cleanup_wait_timeouts = counterDelta(before.cleanup_wait_timeouts, after.cleanup_wait_timeouts),
+                .cleanup_wait_failures = counterDelta(before.cleanup_wait_failures, after.cleanup_wait_failures),
+                .cleanup_released = counterDelta(before.cleanup_released, after.cleanup_released),
+                .cleanup_late_finishes = counterDelta(before.cleanup_late_finishes, after.cleanup_late_finishes),
+                .cleanup_scan_passes = counterDelta(before.cleanup_scan_passes, after.cleanup_scan_passes),
+                .cleanup_scan_slots = counterDelta(before.cleanup_scan_slots, after.cleanup_scan_slots),
+                .free_slots_after = aggregate_after.free_slots,
+                .used_slots_after = aggregate_after.used_slots,
+                .queued_slots_after = aggregate_after.queued_slots,
+                .running_slots_after = aggregate_after.running_slots,
+                .completed_slots_after = aggregate_after.completed_slots,
+                .cancelled_slots_after = aggregate_after.cancelled_slots,
+                .queue_high_water_after = aggregate_after.queue_high_water,
+                .used_high_water_after = aggregate_after.used_high_water,
+                .retained_high_water_after = aggregate_after.retained_high_water,
+                .waiters_current_after = aggregate_after.waiters_current,
+                .waiters_max_after = aggregate_after.waiters_max,
+                .owner_used_slots_after = selected_after.owner_used_slots,
+                .owner_used_high_water_after = selected_after.owner_used_high_water,
+                .owner_retained_high_water_after = selected_after.owner_retained_high_water,
+                .owner_waiters_current_after = selected_after.owner_waiters_current,
+                .owner_waiters_max_after = selected_after.owner_waiters_max,
+            };
+            self.stats.driver_work_samples[self.stats.driver_work_sample_count] = sample;
+            self.stats.driver_work_sample_count += 1;
+
+            const terminal = sample.completed +% sample.cancelled;
+            const sample_ok =
+                audio_writes == measurement.driver_work_audio_writes_per_sample and
+                audio_bytes == measurement.driver_work_audio_writes_per_sample * measurement.driver_work_audio_bytes_per_write and
+                sample.submitted > 0 and
+                sample.submitted == sample.submitted_actual_irq and
+                sample.submitted == sample.submitted_irq_class and
+                sample.submitted_actual_task == 0 and
+                sample.submitted_task_class == 0 and
+                sample.started > 0 and
+                sample.started <= sample.submitted and
+                sample.completed > 0 and
+                sample.completed <= sample.started and
+                terminal <= sample.submitted and
+                sample.wake_publications == terminal and
+                sample.selection_irq == sample.started and
+                sample.failed == 0 and
+                sample.dropped == 0 and
+                sample.full_rejections == 0 and
+                sample.retained_full_rejections == 0 and
+                sample.release_busy == 0 and
+                sample.publication_pending_releases == 0 and
+                sample.waiter_blocked_releases == 0 and
+                sample.invalid_handles == 0 and
+                sample.stale_handles == 0 and
+                sample.wait_timeouts == 0 and
+                sample.wait_failed == 0 and
+                sample.timing_unavailable == 0 and
+                sample.queue_total_ns > 0 and
+                sample.run_total_ns > 0 and
+                sample.e2e_total_ns >= sample.run_total_ns and
+                sample.scan_passes == 0 and
+                sample.scan_slots == 0 and
+                sample.critical_sections > 0 and
+                sample.critical_from_irq > 0 and
+                sample.critical_timing_samples == sample.critical_sections and
+                sample.critical_timing_unavailable == 0 and
+                sample.cleanup_calls == 0 and
+                sample.cleanup_wait_timeouts == 0 and
+                sample.cleanup_wait_failures == 0 and
+                sample.waiters_current_after == 0 and
+                sample.owner_waiters_current_after == 0 and
+                sample.owner_used_slots_after == 0 and
+                driverWorkSlotAccountingOk(aggregate_after);
+            if (!sample_ok) return false;
+        }
+        return self.stats.driver_work_sample_count == self.config.repetitions;
+    }
+
+    fn runDriverWorkAudioLoad(self: *App, out_writes: *u64, out_bytes: *u64) bool {
+        out_writes.* = 0;
+        out_bytes.* = 0;
+        const stream = self.audio.audioOpenStream(48_000, 2, .s16le);
+        if (stream < 0) return false;
+        const stream_id: u32 = @intCast(stream);
+        const spacing_ticks = @max(
+            measurement.ticksForMilliseconds(self.eventHz(), measurement.driver_work_audio_write_spacing_ms),
+            1,
+        );
+        var write_index: u64 = 0;
+        while (write_index < measurement.driver_work_audio_writes_per_sample) : (write_index += 1) {
+            const written = self.audio.audioWrite(stream_id, driver_work_bench_pcm[0..]);
+            if (written != @as(i32, @intCast(driver_work_bench_pcm.len))) {
+                _ = self.audio.audioClose(stream_id);
+                return false;
+            }
+            out_writes.* +%= 1;
+            out_bytes.* +%= @intCast(driver_work_bench_pcm.len);
+            self.sys.sleepTicks(spacing_ticks);
+        }
+        if (self.audio.audioClose(stream_id) != 0) return false;
+        self.sys.sleepTicks(1);
+        return true;
+    }
+
+    fn printDriverWorkResults(self: *App) void {
+        if (self.stats.driver_work_sample_count == 0) return;
+        var queue_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var run_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var e2e_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.driver_work_sample_count) : (index += 1) {
+            const sample = self.stats.driver_work_samples[index];
+            queue_costs[index] = sample.queue_ns_per_started;
+            run_costs[index] = sample.run_ns_per_completed;
+            e2e_costs[index] = sample.e2e_ns_per_completed;
+            self.sys.write("  Driver work sample=");
+            self.sys.printU64(sample.repetition);
+            self.sys.write(" owner=");
+            self.sys.printU64(sample.owner);
+            self.sys.write(" audio=");
+            self.sys.printU64(sample.audio_writes);
+            self.sys.write("/");
+            self.sys.printU64(sample.audio_bytes);
+            self.sys.write(" submit/start/done=");
+            self.sys.printU64(sample.submitted);
+            self.sys.write("/");
+            self.sys.printU64(sample.started);
+            self.sys.write("/");
+            self.sys.printU64(sample.completed);
+            self.sys.write(" queueNs/work=");
+            self.sys.printU64(sample.queue_ns_per_started);
+            self.sys.write(" runNs/work=");
+            self.sys.printU64(sample.run_ns_per_completed);
+            self.sys.write(" e2eNs/work=");
+            self.sys.printU64(sample.e2e_ns_per_completed);
+            self.sys.write(" max=");
+            self.sys.printU64(sample.queue_max_after_ns);
+            self.sys.write("/");
+            self.sys.printU64(sample.run_max_after_ns);
+            self.sys.write("/");
+            self.sys.printU64(sample.e2e_max_after_ns);
+            self.sys.write(" slots=");
+            self.sys.printU64(sample.free_slots_after);
+            self.sys.write("/");
+            self.sys.printU64(sample.used_slots_after);
+            self.sys.write(" scan=");
+            self.sys.printU64(sample.scan_passes);
+            self.sys.write("/");
+            self.sys.printU64(sample.scan_slots);
+            self.sys.write(" irqOffMaxNs=");
+            self.sys.printU64(sample.critical_max_after_ns);
+            self.sys.write(" errors=");
+            self.sys.printU64(sample.failed +% sample.dropped +% sample.full_rejections +% sample.invalid_handles +% sample.stale_handles);
+            self.sys.println("");
+        }
+        self.printDriverWorkDistribution("queue", queue_costs[0..self.stats.driver_work_sample_count]);
+        self.printDriverWorkDistribution("run", run_costs[0..self.stats.driver_work_sample_count]);
+        self.printDriverWorkDistribution("e2e", e2e_costs[0..self.stats.driver_work_sample_count]);
+    }
+
+    fn printDriverWorkDistribution(self: *App, name: []const u8, values: []const u64) void {
+        const distribution = measurement.summarize(values);
+        self.sys.write("  Driver work distribution metric=");
+        self.sys.write(name);
+        self.sys.write(" unit=ns/work n=");
+        self.sys.printU64(distribution.count);
+        self.sys.write(" min=");
+        self.sys.printU64(distribution.minimum);
+        self.sys.write(" p50=");
+        self.sys.printU64(distribution.p50);
+        self.sys.write(" p95=");
+        self.sys.printU64(distribution.p95);
+        self.sys.write(" p99=");
+        self.sys.printU64(distribution.p99);
+        self.sys.write(" max=");
+        self.sys.printU64(distribution.maximum);
+        self.sys.write(" mean=");
+        self.sys.printU64(distribution.mean);
+        self.sys.println("");
+    }
+
     fn probeAudioLatency(self: *App) bool {
         if (!self.dev.hasFn("performance_summary")) {
             self.printCheck("Audio write conformance", false);
@@ -2602,9 +3164,19 @@ const App = struct {
     }
 
     fn testDriverWork(self: *App, summary: r4os.abi.ProgramPerformanceSummary) bool {
+        const compact = self.dev.performanceDriverWork(0) orelse {
+            self.printCheck("Driver workqueue completion", false);
+            return false;
+        };
         const submitted_by_source = summary.driver_work_submitted_from_irq +% summary.driver_work_submitted_from_task;
-        const terminal_items = summary.driver_work_completed +% summary.driver_work_failed +% summary.driver_work_cancelled;
+        const terminal_items = summary.driver_work_completed +% summary.driver_work_cancelled;
+        const compact_ok = driverWorkSnapshotContractOk(compact) and
+            compact.metrics.failed == summary.driver_work_failed and
+            compact.metrics.dropped == summary.driver_work_dropped and
+            compact.metrics.wait_timeouts == summary.driver_work_wait_timeouts and
+            compact.metrics.invalid_handles +% compact.metrics.stale_handles == summary.driver_work_invalid_handles;
         const ok = (summary.flags & r4os.abi.performance_flag_driver_workqueue_ready) != 0 and
+            compact_ok and
             summary.driver_work_worker_started != 0 and
             summary.driver_work_capacity >= r4os.abi.driver_work_queue_capacity and
             summary.driver_work_depth <= summary.driver_work_capacity and
@@ -2639,6 +3211,14 @@ const App = struct {
             self.sys.printU64(summary.driver_work_wait_timeouts);
             self.sys.write(" dropped=");
             self.sys.printU64(summary.driver_work_dropped);
+            self.sys.write(" used/retained=");
+            self.sys.printU64(compact.used_slots);
+            self.sys.write("/");
+            self.sys.printU64(compact.completed_slots + compact.cancelled_slots);
+            self.sys.write(" scan=");
+            self.sys.printU64(compact.metrics.scan_passes);
+            self.sys.write(" irqOffMaxNs=");
+            self.sys.printU64(compact.metrics.critical_max_ns);
             self.sys.println("");
         }
         return ok;

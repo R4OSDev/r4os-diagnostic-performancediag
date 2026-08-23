@@ -21,6 +21,13 @@ PERFDIAG trennt passive Aufnahme, Vertragskonformitaet und Benchmark:
   Programminstanzlookups, Endemarkierungen, Laufzeiten und die exakt aus der
   Istbelegung berechnete quadratische Legacy-Arbeitsmenge werden getrennt
   ausgegeben. PerformanceSummary-Abfragen liegen ausserhalb der Messschleife.
+- /BENCHMARK /KERNEL-IPC misst den bestehenden Kernel-IPC-Vertrag mit einer
+  festen Mischung aus Status-, Fehler-, kleinen und maximalen Requests.
+- /BENCHMARK /DRIVER-WORK erzeugt pro Wiederholung eine feste HDA-
+  Audiolast und misst den tatsaechlich aktiven Treiberowner. Queue-, Run-
+  und E2E-Nanosekunden, Slot- und Ownerzustaende, Waiter/Wakes, Releases,
+  Cleanup, Scanarbeit, IRQ-off-Zeiten und Fehler werden als Rohwerte
+  ausgegeben. Die kompakte R4DEV-Sicht wird fuer Owner 0 bis 16 gelesen.
 
 Der Konformitaetsmodus prueft den aktuellen R4DEV-Performancevertrag und
 fachliche Subsystemwerte:
@@ -48,7 +55,7 @@ p50, p95, p99, Maximum und Mittel aus, so dass auch kleine reproduzierbare
 Verbesserungen bewertet werden koennen.
 
 Die menschenlesbare Ausgabe endet mit einem abgegrenzten, versionierten
-NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 3. Er enthaelt Modus,
+NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 5. Er enthaelt Modus,
 Modul-, Kernel- und API-Version, Clockquelle und -qualitaet, Ereignisbackend
 und rationale Rate, Kalt-/Warmstatus, Wiederholungen, Rohwerte, Einheiten,
 Checks, fehlende Messklassen und die beobachteten Eigenkosten aller
