@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const result_schema = "r4os.perfdiag.ndjson";
-pub const result_schema_version: u32 = 3;
+pub const result_schema_version: u32 = 4;
 pub const default_repetitions: u8 = 5;
 pub const min_repetitions: u8 = 3;
 pub const max_repetitions: u8 = 20;
@@ -9,6 +9,12 @@ pub const blit_min_duration_ms: u64 = 250;
 pub const clock_calls_per_sample: u64 = 10_000;
 pub const service_registry_iterations_per_sample: u64 = 100;
 pub const service_registry_phase_count: usize = 3;
+pub const kernel_ipc_iterations_per_sample: u64 = 64;
+pub const kernel_ipc_status_requests_per_iteration: u64 = 4;
+pub const kernel_ipc_small_error_requests_per_iteration: u64 = 4;
+pub const kernel_ipc_small_requests_per_iteration: u64 = kernel_ipc_status_requests_per_iteration + kernel_ipc_small_error_requests_per_iteration;
+pub const kernel_ipc_max_requests_per_iteration: u64 = 1;
+pub const kernel_ipc_requests_per_iteration: u64 = kernel_ipc_small_requests_per_iteration + kernel_ipc_max_requests_per_iteration;
 pub const bytes_per_kb: u64 = 1024;
 pub const kb_per_mb: u64 = 1024;
 pub const bytes_per_mb: u64 = bytes_per_kb * kb_per_mb;
@@ -45,12 +51,14 @@ pub const BenchmarkKind = enum {
     blit,
     clock,
     service_registry,
+    kernel_ipc,
 
     pub fn name(self: BenchmarkKind) []const u8 {
         return switch (self) {
             .blit => "blit",
             .clock => "clock",
             .service_registry => "service-registry",
+            .kernel_ipc => "kernel-ipc",
         };
     }
 };
@@ -135,6 +143,9 @@ pub fn parseArgs(args: []const u8) Config {
         } else if (equalsIgnoreCase(token, "/SERVICE-REGISTRY")) {
             selectMode(&config, .benchmark);
             selectBenchmark(&config, .service_registry);
+        } else if (equalsIgnoreCase(token, "/KERNEL-IPC")) {
+            selectMode(&config, .benchmark);
+            selectBenchmark(&config, .kernel_ipc);
         } else if (equalsIgnoreCase(token, "/COLD")) {
             selectCacheState(&config, .cold);
         } else if (equalsIgnoreCase(token, "/WARM")) {
@@ -298,6 +309,15 @@ test "arguments select the service registry benchmark" {
     try std.testing.expect(config.valid());
     try std.testing.expectEqual(Mode.benchmark, config.mode);
     try std.testing.expectEqual(BenchmarkKind.service_registry, config.benchmark_kind);
+    try std.testing.expectEqual(CacheState.warm, config.cache_state);
+    try std.testing.expectEqual(@as(u8, 5), config.repetitions);
+}
+
+test "arguments select the kernel IPC benchmark" {
+    const config = parseArgs("/benchmark /kernel-ipc /repeat=5 /warm");
+    try std.testing.expect(config.valid());
+    try std.testing.expectEqual(Mode.benchmark, config.mode);
+    try std.testing.expectEqual(BenchmarkKind.kernel_ipc, config.benchmark_kind);
     try std.testing.expectEqual(CacheState.warm, config.cache_state);
     try std.testing.expectEqual(@as(u8, 5), config.repetitions);
 }

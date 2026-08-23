@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.4`
+- Version: `0.3.5`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -33,6 +33,7 @@ modes are:
     PERFDIAG /BENCHMARK /BLIT /REPEAT:5 /WARM
     PERFDIAG /BENCHMARK /CLOCK /REPEAT:5 /WARM
     PERFDIAG /BENCHMARK /SERVICE-REGISTRY /REPEAT:5 /WARM
+    PERFDIAG /BENCHMARK /KERNEL-IPC /REPEAT:5 /WARM
 
 `/BASELINE` captures a summary before any optional workload. `/CONFORMANCE`
 runs the state-changing contract probes and does not claim a performance
@@ -42,7 +43,11 @@ per sample. `/BENCHMARK /SERVICE-REGISTRY` measures 100 complete enumerations
 per sample in separate ServiceInfo, ServiceDetail, and ServiceManager-DIAG-
 equivalent phases. It records API calls, refresh visits, program-instance
 lookups, end markers, elapsed time, and the exact legacy quadratic work
-reference. Every successful run ends with a delimited, versioned NDJSON v3
+reference. `/BENCHMARK /KERNEL-IPC` measures status and error requests on all
+four network channels plus maximum-sized requests through the central kernel
+channel worker. It records caller, queue, handler and end-to-end latency with
+byte, queue and backpressure counters. Every successful run ends with a
+delimited, versioned NDJSON v4
 result block containing clock source and quality, the event backend and exact
 rate, run metadata, raw samples, distributions, checks, missing measurement
 flags, and measured summary-query overhead.
