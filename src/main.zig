@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.1";
+const module_version = "0.3.2";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -686,6 +686,11 @@ const App = struct {
             summary.service_completion_timeouts <= summary.service_timeouts and
             summary.service_admission_timeouts <= summary.service_timeouts and
             summary.service_cancellations <= summary.service_drops;
+        const service_payload_ok = summary.service_payload_copy_bytes > 0 and
+            summary.service_payload_clear_bytes == 0 and
+            summary.service_slot_metadata_resets > 0 and
+            summary.service_endpoint_metadata_resets > 0 and
+            summary.service_endpoint_payload_reset_bytes == 0;
         const display_responsiveness_ok = summary.display_present_count > 0 and
             summary.display_present_bytes_total > 0 and
             summary.display_present_max_ticks >= summary.display_present_last_ticks and
@@ -978,6 +983,7 @@ const App = struct {
             summary.fs_cache_writeback_errors == 0 and
             summary.service_queue_depth_total >= summary.service_endpoints and
             service_completion_ok and
+            service_payload_ok and
             display_responsiveness_ok and
             audio_latency_ok and
             loader_perf_ok and
@@ -1003,6 +1009,7 @@ const App = struct {
             summary.fs_cache_writeback_errors == 0 and
             summary.storage_completion_timeouts == 0 and
             summary.service_queue_used_total <= summary.service_queue_depth_total and
+            service_payload_ok and
             lock_ok and
             summary.memory_backing_store_status == r4os.abi.memory_backing_store_status_ready and
             backingStoreReadyFlagsOk(summary.memory_backing_store_flags) and
@@ -1017,6 +1024,7 @@ const App = struct {
             summary.memory_page_io_error_slots == 0 and
             summary.memory_vm_page_state_status == r4os.abi.memory_vm_page_state_status_ready and
             summary.memory_vm_pager_data_lost_pages == 0;
+        self.printCheck("Service payload length/reset counters", service_payload_ok);
         self.printCheck("Performance summary contract", contract_ok);
         if (!legacy_snapshot_ok) {
             self.sys.println("  Legacy exact-state aggregate: OBSERVED (not a contract gate)");
@@ -2630,6 +2638,16 @@ const App = struct {
         self.sys.printU64(summary.service_admission_waits);
         self.sys.write(" atimeout=");
         self.sys.printU64(summary.service_admission_timeouts);
+        self.sys.write(" copyB=");
+        self.sys.printU64(summary.service_payload_copy_bytes);
+        self.sys.write(" clearB=");
+        self.sys.printU64(summary.service_payload_clear_bytes);
+        self.sys.write(" sreset=");
+        self.sys.printU64(summary.service_slot_metadata_resets);
+        self.sys.write(" ereset=");
+        self.sys.printU64(summary.service_endpoint_metadata_resets);
+        self.sys.write(" erclearB=");
+        self.sys.printU64(summary.service_endpoint_payload_reset_bytes);
         self.sys.println("");
 
         self.sys.write("  TCP: active=");
