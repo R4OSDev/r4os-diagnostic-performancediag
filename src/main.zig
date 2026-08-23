@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.2";
+const module_version = "0.3.3";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -691,6 +691,23 @@ const App = struct {
             summary.service_slot_metadata_resets > 0 and
             summary.service_endpoint_metadata_resets > 0 and
             summary.service_endpoint_payload_reset_bytes == 0;
+        var service_lock_ok = summary.service_lock_family_count == 7 and
+            summary.service_lock_timing_stride > 0 and
+            summary.service_lock_timing_reserved0 == 0 and
+            summary.service_queue_scan_passes > 0 and
+            summary.service_queue_scan_slots >= summary.service_queue_scan_passes and
+            summary.service_queue_scan_slots <= summary.service_queue_scan_passes * 8 and
+            summary.service_endpoint_revalidations > 0;
+        var service_lock_family: usize = 0;
+        while (service_lock_family < summary.service_lock_acquisitions.len) : (service_lock_family += 1) {
+            service_lock_ok = service_lock_ok and
+                summary.service_lock_acquisitions[service_lock_family] > 0 and
+                summary.service_lock_timing_samples[service_lock_family] > 0 and
+                summary.service_lock_timing_samples[service_lock_family] <= summary.service_lock_acquisitions[service_lock_family] and
+                summary.service_lock_wait_max_ns[service_lock_family] <= summary.service_lock_wait_ns[service_lock_family] and
+                summary.service_lock_hold_max_ns[service_lock_family] <= summary.service_lock_hold_ns[service_lock_family] and
+                summary.service_lock_timing_unavailable[service_lock_family] <= summary.service_lock_timing_samples[service_lock_family] * 2;
+        }
         const display_responsiveness_ok = summary.display_present_count > 0 and
             summary.display_present_bytes_total > 0 and
             summary.display_present_max_ticks >= summary.display_present_last_ticks and
@@ -984,6 +1001,7 @@ const App = struct {
             summary.service_queue_depth_total >= summary.service_endpoints and
             service_completion_ok and
             service_payload_ok and
+            service_lock_ok and
             display_responsiveness_ok and
             audio_latency_ok and
             loader_perf_ok and
@@ -1010,6 +1028,7 @@ const App = struct {
             summary.storage_completion_timeouts == 0 and
             summary.service_queue_used_total <= summary.service_queue_depth_total and
             service_payload_ok and
+            service_lock_ok and
             lock_ok and
             summary.memory_backing_store_status == r4os.abi.memory_backing_store_status_ready and
             backingStoreReadyFlagsOk(summary.memory_backing_store_flags) and
@@ -1025,6 +1044,7 @@ const App = struct {
             summary.memory_vm_page_state_status == r4os.abi.memory_vm_page_state_status_ready and
             summary.memory_vm_pager_data_lost_pages == 0;
         self.printCheck("Service payload length/reset counters", service_payload_ok);
+        self.printCheck("Service endpoint lock/scan counters", service_lock_ok);
         self.printCheck("Performance summary contract", contract_ok);
         if (!legacy_snapshot_ok) {
             self.sys.println("  Legacy exact-state aggregate: OBSERVED (not a contract gate)");
@@ -2649,6 +2669,42 @@ const App = struct {
         self.sys.write(" erclearB=");
         self.sys.printU64(summary.service_endpoint_payload_reset_bytes);
         self.sys.println("");
+
+        self.sys.write("  ServiceScan: passes=");
+        self.sys.printU64(summary.service_queue_scan_passes);
+        self.sys.write(" slots=");
+        self.sys.printU64(summary.service_queue_scan_slots);
+        self.sys.write(" revalidations=");
+        self.sys.printU64(summary.service_endpoint_revalidations);
+        self.sys.write(" stale=");
+        self.sys.printU64(summary.service_endpoint_stale_rejections);
+        self.sys.write(" families=");
+        self.sys.printU64(summary.service_lock_family_count);
+        self.sys.write(" stride=");
+        self.sys.printU64(summary.service_lock_timing_stride);
+        self.sys.println("");
+        var service_lock_family: usize = 0;
+        while (service_lock_family < summary.service_lock_acquisitions.len) : (service_lock_family += 1) {
+            self.sys.write("  ServiceLock: family=");
+            self.sys.printU64(@intCast(service_lock_family));
+            self.sys.write(" acq=");
+            self.sys.printU64(summary.service_lock_acquisitions[service_lock_family]);
+            self.sys.write(" contention=");
+            self.sys.printU64(summary.service_lock_contentions[service_lock_family]);
+            self.sys.write(" samples=");
+            self.sys.printU64(summary.service_lock_timing_samples[service_lock_family]);
+            self.sys.write(" waitNs=");
+            self.sys.printU64(summary.service_lock_wait_ns[service_lock_family]);
+            self.sys.write(" waitMaxNs=");
+            self.sys.printU64(summary.service_lock_wait_max_ns[service_lock_family]);
+            self.sys.write(" holdNs=");
+            self.sys.printU64(summary.service_lock_hold_ns[service_lock_family]);
+            self.sys.write(" holdMaxNs=");
+            self.sys.printU64(summary.service_lock_hold_max_ns[service_lock_family]);
+            self.sys.write(" unavailable=");
+            self.sys.printU64(summary.service_lock_timing_unavailable[service_lock_family]);
+            self.sys.println("");
+        }
 
         self.sys.write("  TCP: active=");
         self.sys.printU64(summary.tcp_active_connections);
