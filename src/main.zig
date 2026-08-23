@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.6";
+const module_version = "0.3.7";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -19,6 +19,7 @@ const backing_store_lifecycle_vm_slots: u64 = 2;
 const backing_store_lifecycle_region_bytes: u64 = 4 * 4096;
 var preemption_burn_sink: u64 = 0;
 var service_registry_benchmark_sink: u64 = 0;
+var pci_inventory_benchmark_sink: u64 = 0;
 var preemption_worker_stop: u32 = 0;
 var avx_worker_results: [2]u32 = .{ 0, 0 };
 // 0.56.12: Frame-Puffer fuer den Blit-Durchsatz-Benchmark (320x64 XRGB).
@@ -213,6 +214,64 @@ const DriverWorkSample = struct {
     owner_waiters_max_after: u32 = 0,
 };
 
+const PciInventorySample = struct {
+    repetition: u8 = 0,
+    iterations: u64 = 0,
+    summaries: u64 = 0,
+    records: u64 = 0,
+    api_errors: u64 = 0,
+    elapsed_ns: u64 = 0,
+    ns_per_inventory: u64 = 0,
+    ecam_read_delta: u64 = 0,
+    ecam_write_delta: u64 = 0,
+    legacy_read_delta: u64 = 0,
+    legacy_write_delta: u64 = 0,
+    mapping_check_delta: u64 = 0,
+    mapping_miss_delta: u64 = 0,
+    mapping_fast_delta: u64 = 0,
+    invalid_access_delta: u64 = 0,
+    class_find_delta: u64 = 0,
+    detail_materialization_delta: u64 = 0,
+    interrupt_read_delta: u64 = 0,
+    command_read_delta: u64 = 0,
+    bar_read_delta: u64 = 0,
+    flags: u32 = 0,
+    generation: u32 = 0,
+    capacity: u32 = 0,
+    found: u64 = 0,
+    stored: u64 = 0,
+    dropped: u64 = 0,
+    ecam_stored: u64 = 0,
+    legacy_stored: u64 = 0,
+    vendor_probes_ecam: u64 = 0,
+    vendor_probes_legacy: u64 = 0,
+    class_reads: u64 = 0,
+    header_reads: u64 = 0,
+    enumeration_config_reads: u64 = 0,
+    function_pages: u64 = 0,
+    early_stops: u64 = 0,
+    ecam_config_reads: u64 = 0,
+    ecam_config_writes: u64 = 0,
+    legacy_config_reads: u64 = 0,
+    legacy_config_writes: u64 = 0,
+    mapping_checks: u64 = 0,
+    mapping_hits: u64 = 0,
+    mapping_misses: u64 = 0,
+    mapping_fast_accesses: u64 = 0,
+    invalid_accesses: u64 = 0,
+    class_find_calls: u64 = 0,
+    class_candidates: u64 = 0,
+    detail_materializations: u64 = 0,
+    interrupt_dword_reads: u64 = 0,
+    command_reads: u64 = 0,
+    bar_reads: u64 = 0,
+    enumeration_total_ns: u64 = 0,
+    ecam_enumeration_ns: u64 = 0,
+    legacy_enumeration_ns: u64 = 0,
+    timing_unavailable: u64 = 0,
+    checksum: u64 = 0,
+};
+
 const RunStats = struct {
     summary_query_attempts: u32 = 0,
     summary_query_successes: u32 = 0,
@@ -232,6 +291,8 @@ const RunStats = struct {
     kernel_ipc_sample_count: usize = 0,
     driver_work_samples: [measurement.max_repetitions]DriverWorkSample = .{DriverWorkSample{}} ** measurement.max_repetitions,
     driver_work_sample_count: usize = 0,
+    pci_inventory_samples: [measurement.max_repetitions]PciInventorySample = .{PciInventorySample{}} ** measurement.max_repetitions,
+    pci_inventory_sample_count: usize = 0,
 };
 const avx_pattern_a: [32]u8 align(32) = .{
     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
@@ -389,6 +450,7 @@ const App = struct {
                     .service_registry => self.probeServiceRegistry(),
                     .kernel_ipc => self.probeKernelIpc(),
                     .driver_work => self.probeDriverWork(),
+                    .pci_inventory => self.probePciInventory(),
                 };
                 if (self.captureSummary()) |summary| {
                     post_summary = summary;
@@ -418,6 +480,10 @@ const App = struct {
                         self.printDriverWorkResults();
                         self.printCheck("Driver workqueue benchmark", ok);
                     },
+                    .pci_inventory => {
+                        self.printPciInventoryResults();
+                        self.printCheck("Canonical PCI inventory benchmark", ok);
+                    },
                 }
             },
         }
@@ -444,6 +510,7 @@ const App = struct {
     fn runConformance(self: *App, out_summary: *r4os.abi.ProgramPerformanceSummary) bool {
         var ok = true;
         ok = self.testApiHeader() and ok;
+        ok = self.testPciInventorySnapshot() and ok;
         ok = self.testMonotonicClock() and ok;
         self.sys.sleepTicks(1);
         var fs_probe: [64]u8 = undefined;
@@ -535,6 +602,7 @@ const App = struct {
         self.sys.println("  PERFDIAG /BENCHMARK /SERVICE-REGISTRY /REPEAT:5 /WARM");
         self.sys.println("  PERFDIAG /BENCHMARK /KERNEL-IPC /REPEAT:5 /WARM");
         self.sys.println("  PERFDIAG /BENCHMARK /DRIVER-WORK /REPEAT:5 /WARM");
+        self.sys.println("  PERFDIAG /BENCHMARK /PCI-INVENTORY /REPEAT:5 /WARM");
         self.sys.println("No mode runs the passive baseline. Repetitions: 3..20.");
     }
 
@@ -839,6 +907,7 @@ const App = struct {
         }
         self.printKernelIpcMachineResults();
         self.printDriverWorkMachineResults();
+        self.printPciInventoryMachineResults();
 
         self.machineLinePrefix("observer");
         self.sys.write(",\"summary_query_attempts\":");
@@ -1059,6 +1128,84 @@ const App = struct {
         self.sys.println("}");
     }
 
+    fn printPciInventoryMachineResults(self: *App) void {
+        if (self.stats.pci_inventory_sample_count == 0) return;
+        var costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.pci_inventory_sample_count) : (index += 1) {
+            const sample = self.stats.pci_inventory_samples[index];
+            costs[index] = sample.ns_per_inventory;
+            self.machineLinePrefix("pci_inventory_sample");
+            self.printJsonU64Field("sample", sample.repetition);
+            self.printJsonU64Field("iterations", sample.iterations);
+            self.printJsonU64Field("summaries", sample.summaries);
+            self.printJsonU64Field("records", sample.records);
+            self.printJsonU64Field("api_errors", sample.api_errors);
+            self.printJsonU64Field("elapsed_ns", sample.elapsed_ns);
+            self.printJsonU64Field("ns_per_inventory", sample.ns_per_inventory);
+            self.printJsonU64Field("ecam_read_delta", sample.ecam_read_delta);
+            self.printJsonU64Field("ecam_write_delta", sample.ecam_write_delta);
+            self.printJsonU64Field("legacy_read_delta", sample.legacy_read_delta);
+            self.printJsonU64Field("legacy_write_delta", sample.legacy_write_delta);
+            self.printJsonU64Field("mapping_check_delta", sample.mapping_check_delta);
+            self.printJsonU64Field("mapping_miss_delta", sample.mapping_miss_delta);
+            self.printJsonU64Field("mapping_fast_delta", sample.mapping_fast_delta);
+            self.printJsonU64Field("invalid_access_delta", sample.invalid_access_delta);
+            self.printJsonU64Field("class_find_delta", sample.class_find_delta);
+            self.printJsonU64Field("detail_materialization_delta", sample.detail_materialization_delta);
+            self.printJsonU64Field("interrupt_read_delta", sample.interrupt_read_delta);
+            self.printJsonU64Field("command_read_delta", sample.command_read_delta);
+            self.printJsonU64Field("bar_read_delta", sample.bar_read_delta);
+            self.printJsonU64Field("flags", sample.flags);
+            self.printJsonU64Field("generation", sample.generation);
+            self.printJsonU64Field("capacity", sample.capacity);
+            self.printJsonU64Field("found", sample.found);
+            self.printJsonU64Field("stored", sample.stored);
+            self.printJsonU64Field("dropped", sample.dropped);
+            self.printJsonU64Field("ecam_stored", sample.ecam_stored);
+            self.printJsonU64Field("legacy_stored", sample.legacy_stored);
+            self.printJsonU64Field("vendor_probes_ecam", sample.vendor_probes_ecam);
+            self.printJsonU64Field("vendor_probes_legacy", sample.vendor_probes_legacy);
+            self.printJsonU64Field("class_reads", sample.class_reads);
+            self.printJsonU64Field("header_reads", sample.header_reads);
+            self.printJsonU64Field("enumeration_config_reads", sample.enumeration_config_reads);
+            self.printJsonU64Field("function_pages", sample.function_pages);
+            self.printJsonU64Field("early_stops", sample.early_stops);
+            self.printJsonU64Field("ecam_config_reads", sample.ecam_config_reads);
+            self.printJsonU64Field("ecam_config_writes", sample.ecam_config_writes);
+            self.printJsonU64Field("legacy_config_reads", sample.legacy_config_reads);
+            self.printJsonU64Field("legacy_config_writes", sample.legacy_config_writes);
+            self.printJsonU64Field("mapping_checks", sample.mapping_checks);
+            self.printJsonU64Field("mapping_hits", sample.mapping_hits);
+            self.printJsonU64Field("mapping_misses", sample.mapping_misses);
+            self.printJsonU64Field("mapping_fast_accesses", sample.mapping_fast_accesses);
+            self.printJsonU64Field("invalid_accesses", sample.invalid_accesses);
+            self.printJsonU64Field("class_find_calls", sample.class_find_calls);
+            self.printJsonU64Field("class_candidates", sample.class_candidates);
+            self.printJsonU64Field("detail_materializations", sample.detail_materializations);
+            self.printJsonU64Field("interrupt_dword_reads", sample.interrupt_dword_reads);
+            self.printJsonU64Field("command_reads", sample.command_reads);
+            self.printJsonU64Field("bar_reads", sample.bar_reads);
+            self.printJsonU64Field("enumeration_total_ns", sample.enumeration_total_ns);
+            self.printJsonU64Field("ecam_enumeration_ns", sample.ecam_enumeration_ns);
+            self.printJsonU64Field("legacy_enumeration_ns", sample.legacy_enumeration_ns);
+            self.printJsonU64Field("timing_unavailable", sample.timing_unavailable);
+            self.printJsonU64Field("checksum", sample.checksum);
+            self.sys.println("}");
+        }
+        const distribution = measurement.summarize(costs[0..self.stats.pci_inventory_sample_count]);
+        self.machineLinePrefix("pci_inventory_distribution");
+        self.sys.write(",\"unit\":\"ns/inventory\"");
+        self.printJsonU64Field("count", distribution.count);
+        self.printJsonU64Field("min", distribution.minimum);
+        self.printJsonU64Field("p50", distribution.p50);
+        self.printJsonU64Field("p95", distribution.p95);
+        self.printJsonU64Field("p99", distribution.p99);
+        self.printJsonU64Field("max", distribution.maximum);
+        self.printJsonU64Field("mean", distribution.mean);
+        self.sys.println("}");
+    }
+
     fn printJsonU64Field(self: *App, name: []const u8, value: u64) void {
         self.sys.write(",\"");
         self.sys.write(name);
@@ -1102,6 +1249,7 @@ const App = struct {
             self.dev.hasFn("performance_boot_phase_clock") and
             self.dev.hasFn("performance_irq_timing") and
             self.dev.hasFn("performance_driver_work") and
+            self.dev.hasFn("performance_pci_inventory") and
             self.dev.hasFn("memory_reclaim_probe") and
             self.dev.hasFn("memory_backing_store_probe") and
             self.dev.hasFn("memory_backing_store_slot_probe") and
@@ -1117,6 +1265,87 @@ const App = struct {
         self.sys.printU64(self.sys.tableSize());
         self.sys.println("");
         return true;
+    }
+
+    fn testPciInventorySnapshot(self: *App) bool {
+        const snapshot = self.dev.performancePciInventory() orelse {
+            self.printCheck("Canonical PCI inventory snapshot", false);
+            return false;
+        };
+        const ok = pciInventorySnapshotContractOk(snapshot);
+        self.printCheck("Canonical PCI inventory snapshot", ok);
+        self.sys.write("  PCI found/stored/dropped=");
+        self.sys.printU64(snapshot.found);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.stored);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.dropped);
+        self.sys.write(" probes(ecam/legacy)=");
+        self.sys.printU64(snapshot.vendor_probes_ecam);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.vendor_probes_legacy);
+        self.sys.write(" map(check/hit/miss)=");
+        self.sys.printU64(snapshot.mapping_checks);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.mapping_hits);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.mapping_misses);
+        self.sys.println("");
+        self.sys.write("  PCI flags/generation/capacity=");
+        self.sys.printU64(snapshot.flags);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.generation);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.capacity);
+        self.sys.write(" stored(ecam/legacy)=");
+        self.sys.printU64(snapshot.ecam_stored);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.legacy_stored);
+        self.sys.println("");
+        self.sys.write("  PCI reads(enum/class/header/pages)=");
+        self.sys.printU64(snapshot.enumeration_config_reads);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.class_reads);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.header_reads);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.function_pages);
+        self.sys.write(" config(ecam-r/ecam-w/legacy-r/legacy-w)=");
+        self.sys.printU64(snapshot.ecam_config_reads);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.ecam_config_writes);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.legacy_config_reads);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.legacy_config_writes);
+        self.sys.println("");
+        self.sys.write("  PCI map-fast/invalid=");
+        self.sys.printU64(snapshot.mapping_fast_accesses);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.invalid_accesses);
+        self.sys.write(" detail(find/candidates/materialized/irq/cmd/bar)=");
+        self.sys.printU64(snapshot.class_find_calls);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.class_candidates);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.detail_materializations);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.interrupt_dword_reads);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.command_reads);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.bar_reads);
+        self.sys.println("");
+        self.sys.write("  PCI timing(total/ecam/legacy/unavailable)=");
+        self.sys.printU64(snapshot.enumeration_total_ns);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.ecam_enumeration_ns);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.legacy_enumeration_ns);
+        self.sys.write("/");
+        self.sys.printU64(snapshot.timing_unavailable);
+        self.sys.println("");
+        return ok;
     }
 
     fn testMonotonicClock(self: *App) bool {
@@ -3019,6 +3248,195 @@ const App = struct {
         self.sys.write("  Driver work distribution metric=");
         self.sys.write(name);
         self.sys.write(" unit=ns/work n=");
+        self.sys.printU64(distribution.count);
+        self.sys.write(" min=");
+        self.sys.printU64(distribution.minimum);
+        self.sys.write(" p50=");
+        self.sys.printU64(distribution.p50);
+        self.sys.write(" p95=");
+        self.sys.printU64(distribution.p95);
+        self.sys.write(" p99=");
+        self.sys.printU64(distribution.p99);
+        self.sys.write(" max=");
+        self.sys.printU64(distribution.maximum);
+        self.sys.write(" mean=");
+        self.sys.printU64(distribution.mean);
+        self.sys.println("");
+    }
+
+    fn probePciInventory(self: *App) bool {
+        if (!self.dev.hasFn("performance_pci_inventory") or
+            !self.dev.hasFn("device_inventory_summary") or
+            !self.dev.hasFn("device_inventory_record") or
+            !self.monotonic_clock_available) return false;
+
+        self.stats.pci_inventory_sample_count = 0;
+        var benchmark_ok = true;
+        var expected_total: ?u64 = null;
+        var repetition: u8 = 0;
+        while (repetition < self.config.repetitions) : (repetition += 1) {
+            const before = self.dev.performancePciInventory() orelse return false;
+            if (!pciInventorySnapshotContractOk(before)) return false;
+
+            var clock_start: r4os.abi.MonotonicClockInfo = .{};
+            if (!self.queryMonotonicClock(&clock_start)) return false;
+            var summaries: u64 = 0;
+            var records: u64 = 0;
+            var api_errors: u64 = 0;
+            var checksum: u64 = 0xcbf29ce484222325;
+            var iteration: u64 = 0;
+            while (iteration < measurement.pci_inventory_iterations_per_sample) : (iteration += 1) {
+                var summary: r4os.abi.DeviceInventorySummary = .{};
+                if (self.dev.deviceInventorySummary(&summary) <= 0) {
+                    api_errors +%= 1;
+                    continue;
+                }
+                summaries +%= 1;
+                const total: u64 = summary.total;
+                if (expected_total) |expected| {
+                    if (total != expected) api_errors +%= 1;
+                } else {
+                    expected_total = total;
+                }
+                mixServiceRegistryValue(&checksum, total);
+                mixServiceRegistryValue(&checksum, summary.with_driver);
+                mixServiceRegistryValue(&checksum, summary.without_driver);
+                mixServiceRegistryValue(&checksum, summary.unknown);
+                mixServiceRegistryValue(&checksum, summary.truncated);
+
+                var index: u32 = 0;
+                while (index < summary.total) : (index += 1) {
+                    var record: r4os.abi.DeviceInventoryRecord = .{};
+                    if (self.dev.deviceInventoryRecord(index, &record) <= 0) {
+                        api_errors +%= 1;
+                        break;
+                    }
+                    records +%= 1;
+                    mixPciInventoryRecord(&checksum, record);
+                }
+            }
+            var clock_end: r4os.abi.MonotonicClockInfo = .{};
+            if (!self.queryMonotonicClock(&clock_end) or
+                clock_end.generation != clock_start.generation or
+                clock_end.instant_ns <= clock_start.instant_ns) return false;
+            const after = self.dev.performancePciInventory() orelse return false;
+            if (!pciInventorySnapshotContractOk(after)) return false;
+
+            const elapsed_ns = clock_end.instant_ns - clock_start.instant_ns;
+            const sample = PciInventorySample{
+                .repetition = repetition + 1,
+                .iterations = measurement.pci_inventory_iterations_per_sample,
+                .summaries = summaries,
+                .records = records,
+                .api_errors = api_errors,
+                .elapsed_ns = elapsed_ns,
+                .ns_per_inventory = elapsed_ns / measurement.pci_inventory_iterations_per_sample,
+                .ecam_read_delta = counterDelta(before.ecam_config_reads, after.ecam_config_reads),
+                .ecam_write_delta = counterDelta(before.ecam_config_writes, after.ecam_config_writes),
+                .legacy_read_delta = counterDelta(before.legacy_config_reads, after.legacy_config_reads),
+                .legacy_write_delta = counterDelta(before.legacy_config_writes, after.legacy_config_writes),
+                .mapping_check_delta = counterDelta(before.mapping_checks, after.mapping_checks),
+                .mapping_miss_delta = counterDelta(before.mapping_misses, after.mapping_misses),
+                .mapping_fast_delta = counterDelta(before.mapping_fast_accesses, after.mapping_fast_accesses),
+                .invalid_access_delta = counterDelta(before.invalid_accesses, after.invalid_accesses),
+                .class_find_delta = counterDelta(before.class_find_calls, after.class_find_calls),
+                .detail_materialization_delta = counterDelta(before.detail_materializations, after.detail_materializations),
+                .interrupt_read_delta = counterDelta(before.interrupt_dword_reads, after.interrupt_dword_reads),
+                .command_read_delta = counterDelta(before.command_reads, after.command_reads),
+                .bar_read_delta = counterDelta(before.bar_reads, after.bar_reads),
+                .flags = after.flags,
+                .generation = after.generation,
+                .capacity = after.capacity,
+                .found = after.found,
+                .stored = after.stored,
+                .dropped = after.dropped,
+                .ecam_stored = after.ecam_stored,
+                .legacy_stored = after.legacy_stored,
+                .vendor_probes_ecam = after.vendor_probes_ecam,
+                .vendor_probes_legacy = after.vendor_probes_legacy,
+                .class_reads = after.class_reads,
+                .header_reads = after.header_reads,
+                .enumeration_config_reads = after.enumeration_config_reads,
+                .function_pages = after.function_pages,
+                .early_stops = after.early_stops,
+                .ecam_config_reads = after.ecam_config_reads,
+                .ecam_config_writes = after.ecam_config_writes,
+                .legacy_config_reads = after.legacy_config_reads,
+                .legacy_config_writes = after.legacy_config_writes,
+                .mapping_checks = after.mapping_checks,
+                .mapping_hits = after.mapping_hits,
+                .mapping_misses = after.mapping_misses,
+                .mapping_fast_accesses = after.mapping_fast_accesses,
+                .invalid_accesses = after.invalid_accesses,
+                .class_find_calls = after.class_find_calls,
+                .class_candidates = after.class_candidates,
+                .detail_materializations = after.detail_materializations,
+                .interrupt_dword_reads = after.interrupt_dword_reads,
+                .command_reads = after.command_reads,
+                .bar_reads = after.bar_reads,
+                .enumeration_total_ns = after.enumeration_total_ns,
+                .ecam_enumeration_ns = after.ecam_enumeration_ns,
+                .legacy_enumeration_ns = after.legacy_enumeration_ns,
+                .timing_unavailable = after.timing_unavailable,
+                .checksum = checksum,
+            };
+            self.stats.pci_inventory_samples[self.stats.pci_inventory_sample_count] = sample;
+            self.stats.pci_inventory_sample_count += 1;
+            pci_inventory_benchmark_sink +%= checksum;
+
+            const expected_records = (expected_total orelse 0) * sample.summaries;
+            const sample_ok = before.generation == after.generation and
+                before.flags == after.flags and
+                sample.summaries == sample.iterations and
+                sample.records == expected_records and
+                sample.api_errors == 0 and
+                sample.ecam_read_delta == 0 and sample.ecam_write_delta == 0 and
+                sample.legacy_read_delta == 0 and sample.legacy_write_delta == 0 and
+                sample.mapping_check_delta == 0 and sample.mapping_miss_delta == 0 and
+                sample.mapping_fast_delta == 0 and sample.invalid_access_delta == 0 and
+                sample.class_find_delta == 0 and sample.detail_materialization_delta == 0 and
+                sample.interrupt_read_delta == 0 and sample.command_read_delta == 0 and
+                sample.bar_read_delta == 0;
+            benchmark_ok = sample_ok and benchmark_ok;
+        }
+        return benchmark_ok and self.stats.pci_inventory_sample_count == self.config.repetitions;
+    }
+
+    fn printPciInventoryResults(self: *App) void {
+        if (self.stats.pci_inventory_sample_count == 0) return;
+        var costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.pci_inventory_sample_count) : (index += 1) {
+            const sample = self.stats.pci_inventory_samples[index];
+            costs[index] = sample.ns_per_inventory;
+            self.sys.write("  PCI inventory sample=");
+            self.sys.printU64(sample.repetition);
+            self.sys.write(" inventory/records=");
+            self.sys.printU64(sample.summaries);
+            self.sys.write("/");
+            self.sys.printU64(sample.records);
+            self.sys.write(" ns/inventory=");
+            self.sys.printU64(sample.ns_per_inventory);
+            self.sys.write(" found/stored/dropped=");
+            self.sys.printU64(sample.found);
+            self.sys.write("/");
+            self.sys.printU64(sample.stored);
+            self.sys.write("/");
+            self.sys.printU64(sample.dropped);
+            self.sys.write(" probes(ecam/legacy)=");
+            self.sys.printU64(sample.vendor_probes_ecam);
+            self.sys.write("/");
+            self.sys.printU64(sample.vendor_probes_legacy);
+            self.sys.write(" configDelta=");
+            self.sys.printU64(sample.ecam_read_delta +% sample.legacy_read_delta);
+            self.sys.write(" mapDelta=");
+            self.sys.printU64(sample.mapping_check_delta);
+            self.sys.write(" errors=");
+            self.sys.printU64(sample.api_errors);
+            self.sys.println("");
+        }
+        const distribution = measurement.summarize(costs[0..self.stats.pci_inventory_sample_count]);
+        self.sys.write("  PCI inventory distribution ns/inventory: n=");
         self.sys.printU64(distribution.count);
         self.sys.write(" min=");
         self.sys.printU64(distribution.minimum);
@@ -5823,6 +6241,50 @@ fn delta(after: u64, before: u64) u64 {
 
 fn counterDelta(before: u64, after: u64) u64 {
     return after -% before;
+}
+
+fn pciInventorySnapshotContractOk(info: r4os.abi.ProgramPciInventoryPerformanceInfo) bool {
+    const vendor_probes = info.vendor_probes_ecam +% info.vendor_probes_legacy;
+    const retained_accounting = info.stored == info.ecam_stored +% info.legacy_stored;
+    const found_accounting = info.found == info.stored +% info.dropped;
+    const read_accounting = info.enumeration_config_reads ==
+        vendor_probes +% info.class_reads +% info.header_reads;
+    const truncation_ok = if (info.dropped == 0)
+        (info.flags & r4os.abi.pci_inventory_flag_truncated) == 0 and info.early_stops == 0
+    else
+        (info.flags & r4os.abi.pci_inventory_flag_truncated) != 0 and info.early_stops != 0;
+    const ecam_ok = if ((info.flags & r4os.abi.pci_inventory_flag_ecam) != 0)
+        (info.flags & r4os.abi.pci_inventory_flag_ecam_aperture_ready) != 0 and
+            info.mapping_checks == 2 and info.mapping_hits == 2 and info.mapping_misses == 0 and
+            info.mapping_fast_accesses == info.ecam_config_reads +% info.ecam_config_writes
+    else
+        true;
+    return info.version >= 1 and
+        info.size >= @sizeOf(r4os.abi.ProgramPciInventoryPerformanceInfo) and
+        (info.flags & r4os.abi.pci_inventory_flag_enumerated) != 0 and
+        info.generation != 0 and
+        info.capacity == r4os.abi.pci_inventory_capacity and info.stored <= info.capacity and
+        info.found != 0 and retained_accounting and found_accounting and
+        info.function_pages == vendor_probes and read_accounting and truncation_ok and ecam_ok and
+        (info.enumeration_total_ns != 0 or info.timing_unavailable != 0);
+}
+
+fn mixPciInventoryRecord(hash: *u64, record: r4os.abi.DeviceInventoryRecord) void {
+    mixServiceRegistryValue(hash, record.binding);
+    mixServiceRegistryValue(hash, record.bus);
+    mixServiceRegistryValue(hash, record.flags);
+    mixServiceRegistryValue(hash, record.bus_no);
+    mixServiceRegistryValue(hash, record.device_no);
+    mixServiceRegistryValue(hash, record.function_no);
+    mixServiceRegistryValue(hash, record.class_code);
+    mixServiceRegistryValue(hash, record.subclass);
+    mixServiceRegistryValue(hash, record.prog_if);
+    mixServiceRegistryValue(hash, record.vendor_id);
+    mixServiceRegistryValue(hash, record.device_id);
+    mixServiceRegistryBytes(hash, record.name[0..]);
+    mixServiceRegistryBytes(hash, record.driver[0..]);
+    mixServiceRegistryBytes(hash, record.status[0..]);
+    mixServiceRegistryBytes(hash, record.note[0..]);
 }
 
 fn reductionBasisPoints(reference: u64, current: u64) u64 {

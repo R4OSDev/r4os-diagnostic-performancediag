@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.6`
+- Version: `0.3.7`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -34,6 +34,8 @@ modes are:
     PERFDIAG /BENCHMARK /CLOCK /REPEAT:5 /WARM
     PERFDIAG /BENCHMARK /SERVICE-REGISTRY /REPEAT:5 /WARM
     PERFDIAG /BENCHMARK /KERNEL-IPC /REPEAT:5 /WARM
+    PERFDIAG /BENCHMARK /DRIVER-WORK /REPEAT:5 /WARM
+    PERFDIAG /BENCHMARK /PCI-INVENTORY /REPEAT:5 /WARM
 
 `/BASELINE` captures a summary before any optional workload. `/CONFORMANCE`
 runs the state-changing contract probes and does not claim a performance
@@ -46,8 +48,12 @@ lookups, end markers, elapsed time, and the exact legacy quadratic work
 reference. `/BENCHMARK /KERNEL-IPC` measures status and error requests on all
 four network channels plus maximum-sized requests through the central kernel
 channel worker. It records caller, queue, handler and end-to-end latency with
-byte, queue and backpressure counters. Every successful run ends with a
-delimited, versioned NDJSON v4
+byte, queue and backpressure counters. `/BENCHMARK /DRIVER-WORK` measures a
+fixed HDA workload against the active driver owner. `/BENCHMARK
+/PCI-INVENTORY` performs 100 complete DeviceInventory summary-and-record
+workloads per sample and proves with before/after counters that the cached
+consumer path performs no PCI configuration or ECAM mapping work. Every
+successful run ends with a delimited, versioned NDJSON v6
 result block containing clock source and quality, the event backend and exact
 rate, run metadata, raw samples, distributions, checks, missing measurement
 flags, and measured summary-query overhead.
