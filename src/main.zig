@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.0";
+const module_version = "0.3.1";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -681,7 +681,10 @@ const App = struct {
             summary.lock_unlock_mismatches == 0 and
             summary.lock_tracking_drops == 0;
         const service_completion_ok = summary.service_completion_waits > 0 and
+            summary.service_completion_wait_rounds == summary.service_completion_waits and
+            summary.service_targeted_response_wakes + summary.service_targeted_response_wake_misses == summary.service_responses and
             summary.service_completion_timeouts <= summary.service_timeouts and
+            summary.service_admission_timeouts <= summary.service_timeouts and
             summary.service_cancellations <= summary.service_drops;
         const display_responsiveness_ok = summary.display_present_count > 0 and
             summary.display_present_bytes_total > 0 and
@@ -2617,6 +2620,16 @@ const App = struct {
         self.sys.printU64(summary.service_completion_waits);
         self.sys.write(" ctimeout=");
         self.sys.printU64(summary.service_completion_timeouts);
+        self.sys.write(" cround=");
+        self.sys.printU64(summary.service_completion_wait_rounds);
+        self.sys.write(" rwake=");
+        self.sys.printU64(summary.service_targeted_response_wakes);
+        self.sys.write(" rmiss=");
+        self.sys.printU64(summary.service_targeted_response_wake_misses);
+        self.sys.write(" await=");
+        self.sys.printU64(summary.service_admission_waits);
+        self.sys.write(" atimeout=");
+        self.sys.printU64(summary.service_admission_timeouts);
         self.sys.println("");
 
         self.sys.write("  TCP: active=");
