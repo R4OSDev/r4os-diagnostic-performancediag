@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.13`
+- Version: `0.3.14`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`

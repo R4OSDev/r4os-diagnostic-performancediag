@@ -73,6 +73,10 @@ fachliche Subsystemwerte:
   Direktpufferbetrieb ohne Bounce-Allokation oder -Kopie
 - Mehrsektorwrites sowie operationslokale Pagecache-Commits mit getrennten
   Zaehlern fuer entladene und bewusst zurueckgehaltene fremde Dirty-Sektoren
+- Pagecache-Policyversion, Devicekapazitaet, Dirty-Hysterese, Alters- und
+  Arbeitsbudget, gestarteten Hintergrundowner, fehlerfreien autonomen
+  Fortschritt, begrenzte Device-Probes und Read-ahead-Bilanzen ohne
+  diagnostischen Vollscan-Fallback
 
 Als Abnahmezaun dienen stabile ABI-, Kapazitaets-, Fehler- und
 Konsistenzinvarianten. Historische Exaktzustands-Aggregate bleiben als
@@ -100,3 +104,6 @@ Der zusaetzliche `storage_dispatch`-Datensatz stellt vor/nach der Arbeitslast
 Controller- und Workerzahl, Parallelitaetsmaximum, Direkt- und Bounce-Deltas,
 Mehrsektorwrites, selektiven Writeback, zurueckgehaltene fremde Dirty-
 Sektoren, Timeouts sowie Completion- und FS-Tail in Ticks gegenueber.
+Der Datensatz `fs_cache_policy` ergaenzt dazu Policykonstanten und Deltas fuer
+Worker-Wakes, Hintergrunddrains und -sektoren, Device-Probes, diagnostische
+Fallbacks sowie Read-ahead-Anforderungen, Ausgaben und Treffer.

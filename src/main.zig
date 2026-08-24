@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.13";
+const module_version = "0.3.14";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -884,6 +884,43 @@ const App = struct {
         self.sys.printU64(post_summary.storage_completion_max_ticks);
         self.sys.write(",\"fs_tail_ticks\":");
         self.sys.printU64(post_summary.fs_max_ticks);
+        self.sys.println("}");
+
+        self.machineLinePrefix("fs_cache_policy");
+        self.sys.write(",\"version\":");
+        self.sys.printU64(post_summary.fs_cache_policy_version);
+        self.sys.write(",\"device_capacity\":");
+        self.sys.printU64(post_summary.fs_cache_policy_device_capacity);
+        self.sys.write(",\"dirty_low_pages\":");
+        self.sys.printU64(post_summary.fs_cache_policy_dirty_low_pages);
+        self.sys.write(",\"dirty_high_pages\":");
+        self.sys.printU64(post_summary.fs_cache_policy_dirty_high_pages);
+        self.sys.write(",\"max_dirty_age_ticks\":");
+        self.sys.printU64(post_summary.fs_cache_policy_max_dirty_age_ticks);
+        self.sys.write(",\"page_budget\":");
+        self.sys.printU64(post_summary.fs_cache_policy_background_page_budget);
+        self.sys.write(",\"worker_started\":");
+        self.sys.printU64(post_summary.fs_cache_policy_worker_started);
+        self.sys.write(",\"worker_wakeup_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_policy_worker_wakeups, passive_summary.fs_cache_policy_worker_wakeups));
+        self.sys.write(",\"background_drain_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_policy_background_drains, passive_summary.fs_cache_policy_background_drains));
+        self.sys.write(",\"background_sector_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_policy_background_sectors, passive_summary.fs_cache_policy_background_sectors));
+        self.sys.write(",\"background_error_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_policy_background_errors, passive_summary.fs_cache_policy_background_errors));
+        self.sys.write(",\"clean_device_probe_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_policy_clean_device_probes, passive_summary.fs_cache_policy_clean_device_probes));
+        self.sys.write(",\"dirty_device_probe_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_policy_dirty_device_probes, passive_summary.fs_cache_policy_dirty_device_probes));
+        self.sys.write(",\"full_scan_fallback_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_policy_full_scan_fallbacks, passive_summary.fs_cache_policy_full_scan_fallbacks));
+        self.sys.write(",\"read_ahead_request_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_ahead_requests, passive_summary.fs_cache_read_ahead_requests));
+        self.sys.write(",\"read_ahead_issued_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_ahead_issued, passive_summary.fs_cache_read_ahead_issued));
+        self.sys.write(",\"read_ahead_hit_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_ahead_hits, passive_summary.fs_cache_read_ahead_hits));
         self.sys.println("}");
 
         var check_index: usize = 0;
@@ -1864,6 +1901,21 @@ const App = struct {
             summary.fs_cache_bulk_write_requests <= summary.fs_cache_bulk_write_sectors / 2 and
             summary.fs_cache_selective_flushes <= summary.fs_cache_flushes and
             summary.fs_cache_selective_writeback_sectors <= summary.fs_cache_writeback_sectors;
+        const cache_policy_ok = summary.fs_cache_policy_version == 1 and
+            summary.fs_cache_policy_device_capacity > 0 and
+            summary.fs_cache_policy_device_capacity <= 8 and
+            summary.fs_cache_policy_dirty_low_pages > 0 and
+            summary.fs_cache_policy_dirty_high_pages > summary.fs_cache_policy_dirty_low_pages and
+            summary.fs_cache_policy_dirty_high_pages <= summary.fs_cache_capacity and
+            summary.fs_cache_policy_max_dirty_age_ticks > 0 and
+            summary.fs_cache_policy_background_page_budget > 0 and
+            summary.fs_cache_policy_background_page_budget <= summary.fs_cache_policy_dirty_low_pages and
+            summary.fs_cache_policy_worker_started == 1 and
+            summary.fs_cache_policy_worker_task_id != 0 and
+            summary.fs_cache_policy_device_dirty_high_water <= summary.fs_cache_capacity and
+            summary.fs_cache_policy_background_errors == 0 and
+            summary.fs_cache_policy_full_scan_fallbacks == 0 and
+            summary.fs_cache_read_ahead_hits <= summary.fs_cache_read_ahead_issued;
         const legacy_snapshot_ok = summary.version == r4os.abi.performance_snapshot_version and
             summary.size >= @sizeOf(r4os.abi.ProgramPerformanceSummary) and
             summary.tick_hz > 0 and
@@ -2080,6 +2132,7 @@ const App = struct {
             summary.fs_cache_read_errors == 0 and
             summary.fs_cache_write_errors == 0 and
             summary.fs_cache_writeback_errors == 0 and
+            cache_policy_ok and
             summary.storage_completion_timeouts == 0 and
             storage_dispatch_ok and
             summary.service_queue_used_total <= summary.service_queue_depth_total and
@@ -2102,6 +2155,7 @@ const App = struct {
         self.printCheck("Service payload length/reset counters", service_payload_ok);
         self.printCheck("Service endpoint lock/scan counters", service_lock_ok);
         self.printCheck("Parallel storage dispatch/direct buffers", storage_dispatch_ok);
+        self.printCheck("FS page cache bounded policy", cache_policy_ok);
         self.printCheck("Performance summary contract", contract_ok);
         if (!legacy_snapshot_ok) {
             self.sys.println("  Legacy exact-state aggregate: OBSERVED (not a contract gate)");
@@ -4950,6 +5004,20 @@ const App = struct {
         self.sys.printU64(summary.fs_cache_selective_writeback_sectors);
         self.sys.write(" foreignSkip=");
         self.sys.printU64(summary.fs_cache_selective_foreign_dirty_sectors_skipped);
+        self.sys.write(" policy=");
+        self.sys.printU64(summary.fs_cache_policy_version);
+        self.sys.write(" water=");
+        self.sys.printU64(summary.fs_cache_policy_dirty_low_pages);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_policy_dirty_high_pages);
+        self.sys.write(" bg=");
+        self.sys.printU64(summary.fs_cache_policy_background_drains);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_policy_background_sectors);
+        self.sys.write(" ra=");
+        self.sys.printU64(summary.fs_cache_read_ahead_issued);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_read_ahead_hits);
         self.sys.write(" reclaimClean=");
         self.sys.printU64(summary.fs_cache_clean_reclaimable_bytes);
         self.sys.write(" reclaimDirty=");
