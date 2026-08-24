@@ -22,7 +22,21 @@ PERFDIAG trennt passive Aufnahme, Vertragskonformitaet und Benchmark:
   Istbelegung berechnete quadratische Legacy-Arbeitsmenge werden getrennt
   ausgegeben. PerformanceSummary-Abfragen liegen ausserhalb der Messschleife.
 - /BENCHMARK /KERNEL-IPC misst den bestehenden Kernel-IPC-Vertrag mit einer
-  festen Mischung aus Status-, Fehler-, kleinen und maximalen Requests.
+  festen Mischung aus Status-, Fehler-, kleinen und maximalen Requests. Eine
+  Messreihe stoppt DHCPSVC, DNSSVC, UDPSVC und TCPSVC mit begrenzter Wartezeit
+  voruebergehend, merkt sich ausschliesslich die von ihr selbst gestoppten
+  Dienste und startet diese auf jedem Rueckweg in umgekehrter Reihenfolge neu.
+  Eine warme Messreihe verlangt danach 250 ms Ruhe auf genau diesen vier
+  stabilen Kanalslots; die Wartezeit ist auf 10 Sekunden begrenzt.
+  Kanalspezifische Snapshots schliessen fremde globale IPC-Kanaele aus. Eine
+  Probe mit vollstaendig abgerechneten parallelen Aufrufen auf einem Messkanal
+  wird verworfen und hoechstens zweimal neu angesetzt. Echte IPC-Fehler, eine
+  fehlgeschlagene Isolation oder Wiederherstellung, eine nicht erreichte
+  Ruhephase sowie drei nacheinander verunreinigte Versuche lassen den Lauf
+  weiterhin fehlschlagen. Isolation, Wiederherstellung, Ruhewartezeit,
+  Verwerfungszahl und angenommener Versuch bleiben in Text- und NDJSON-Ausgabe
+  sichtbar; kalte Proben werden aus methodischen Gruenden weder vorgewartet
+  noch wiederholt.
 - /BENCHMARK /DRIVER-WORK erzeugt pro Wiederholung eine feste HDA-
   Audiolast und misst den tatsaechlich aktiven Treiberowner. Queue-, Run-
   und E2E-Nanosekunden, Slot- und Ownerzustaende, Waiter/Wakes, Releases,

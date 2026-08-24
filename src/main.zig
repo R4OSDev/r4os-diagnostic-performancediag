@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.7";
+const module_version = "0.3.10";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -28,6 +28,19 @@ var driver_work_bench_pcm: [measurement.driver_work_audio_bytes_per_write]u8 = .
 const max_check_results = 256;
 const max_service_registry_samples = measurement.service_registry_phase_count * measurement.max_repetitions;
 const service_registry_max_entries: u32 = 64;
+const kernel_ipc_channels = [_]u32{
+    r4os.abi.ipc_channel_net_dhcp,
+    r4os.abi.ipc_channel_net_dns,
+    r4os.abi.ipc_channel_net_tcp,
+    r4os.abi.ipc_channel_net_udp,
+};
+const KernelIpcPerformanceSnapshots = [kernel_ipc_channels.len]r4os.abi.IpcPerformanceSummary;
+const kernel_ipc_proxy_services = [_][:0]const u8{
+    "DHCPSVC",
+    "DNSSVC",
+    "UDPSVC",
+    "TCPSVC",
+};
 
 const CheckResult = struct {
     label: []const u8 = &.{},
@@ -82,6 +95,7 @@ const ServiceRegistryWork = struct {
 
 const KernelIpcSample = struct {
     repetition: u8 = 0,
+    attempt: u8 = 0,
     iterations: u64 = 0,
     requests: u64 = 0,
     status_requests: u64 = 0,
@@ -289,6 +303,16 @@ const RunStats = struct {
     service_registry_sample_count: usize = 0,
     kernel_ipc_samples: [measurement.max_repetitions]KernelIpcSample = .{KernelIpcSample{}} ** measurement.max_repetitions,
     kernel_ipc_sample_count: usize = 0,
+    kernel_ipc_discarded_attempts: u32 = 0,
+    kernel_ipc_quiescence_wait_ticks: u64 = 0,
+    kernel_ipc_quiescence_reached: bool = false,
+    kernel_ipc_isolation_stop_attempts: u32 = 0,
+    kernel_ipc_isolation_stopped: u32 = 0,
+    kernel_ipc_isolation_already_stopped: u32 = 0,
+    kernel_ipc_isolation_stop_mask: u32 = 0,
+    kernel_ipc_isolation_restore_attempts: u32 = 0,
+    kernel_ipc_isolation_restored: u32 = 0,
+    kernel_ipc_isolation_restore_ok: bool = false,
     driver_work_samples: [measurement.max_repetitions]DriverWorkSample = .{DriverWorkSample{}} ** measurement.max_repetitions,
     driver_work_sample_count: usize = 0,
     pci_inventory_samples: [measurement.max_repetitions]PciInventorySample = .{PciInventorySample{}} ** measurement.max_repetitions,
@@ -685,6 +709,26 @@ const App = struct {
         self.printJsonString(self.config.benchmark_kind.name());
         self.sys.write(",\"repetitions\":");
         self.sys.printU64(if (self.config.mode == .benchmark) self.config.repetitions else 1);
+        self.sys.write(",\"kernel_ipc_discarded_attempts\":");
+        self.sys.printU64(self.stats.kernel_ipc_discarded_attempts);
+        self.sys.write(",\"kernel_ipc_quiescence_wait_ticks\":");
+        self.sys.printU64(self.stats.kernel_ipc_quiescence_wait_ticks);
+        self.sys.write(",\"kernel_ipc_quiescence_reached\":");
+        self.printJsonBool(self.stats.kernel_ipc_quiescence_reached);
+        self.sys.write(",\"kernel_ipc_isolation_stop_attempts\":");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_stop_attempts);
+        self.sys.write(",\"kernel_ipc_isolation_stopped\":");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_stopped);
+        self.sys.write(",\"kernel_ipc_isolation_already_stopped\":");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_already_stopped);
+        self.sys.write(",\"kernel_ipc_isolation_stop_mask\":");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_stop_mask);
+        self.sys.write(",\"kernel_ipc_isolation_restore_attempts\":");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_restore_attempts);
+        self.sys.write(",\"kernel_ipc_isolation_restored\":");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_restored);
+        self.sys.write(",\"kernel_ipc_isolation_restore_ok\":");
+        self.printJsonBool(self.stats.kernel_ipc_isolation_restore_ok);
         self.sys.write(",\"clock_available\":");
         self.printJsonBool(self.monotonic_clock_available);
         self.sys.write(",\"clock_source\":");
@@ -941,6 +985,7 @@ const App = struct {
             e2e_costs[index] = sample.handler_e2e_ns_per_request;
             self.machineLinePrefix("kernel_ipc_sample");
             self.printJsonU64Field("sample", sample.repetition);
+            self.printJsonU64Field("attempt", sample.attempt);
             self.printJsonU64Field("iterations", sample.iterations);
             self.printJsonU64Field("requests", sample.requests);
             self.printJsonU64Field("status_requests", sample.status_requests);
@@ -2759,144 +2804,310 @@ const App = struct {
             !self.monotonic_clock_available) return false;
 
         const status_cases = [_]struct { channel: u32, op: u16 }{
-            .{ .channel = r4os.abi.ipc_channel_net_dhcp, .op = r4os.abi.net_service_op_dhcp_status_result },
-            .{ .channel = r4os.abi.ipc_channel_net_dns, .op = r4os.abi.net_service_op_dns_status_result },
-            .{ .channel = r4os.abi.ipc_channel_net_tcp, .op = r4os.abi.net_service_op_tcp_status_result },
-            .{ .channel = r4os.abi.ipc_channel_net_udp, .op = r4os.abi.net_service_op_udp_status_result },
+            .{ .channel = kernel_ipc_channels[0], .op = r4os.abi.net_service_op_dhcp_status_result },
+            .{ .channel = kernel_ipc_channels[1], .op = r4os.abi.net_service_op_dns_status_result },
+            .{ .channel = kernel_ipc_channels[2], .op = r4os.abi.net_service_op_tcp_status_result },
+            .{ .channel = kernel_ipc_channels[3], .op = r4os.abi.net_service_op_udp_status_result },
         };
         var maximum_payload: [r4os.abi.ipc_max_message_size - r4os.abi.net_service_header_size]u8 = undefined;
         for (&maximum_payload, 0..) |*byte, index| byte.* = @truncate(index *% 131 +% 17);
 
+        const requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_requests_per_iteration;
+        const status_requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_status_requests_per_iteration;
+        const small_requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_small_requests_per_iteration;
+        const max_requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_max_requests_per_iteration;
+        const expected_request_bytes = small_requests * r4os.abi.net_service_header_size +
+            max_requests * r4os.abi.ipc_max_message_size;
+        const minimum_response_bytes = requests * r4os.abi.net_service_header_size;
+
         self.stats.kernel_ipc_sample_count = 0;
+        self.stats.kernel_ipc_discarded_attempts = 0;
+        self.stats.kernel_ipc_quiescence_wait_ticks = 0;
+        self.stats.kernel_ipc_quiescence_reached = false;
+        if (!self.isolateKernelIpcProxyServices()) {
+            _ = self.restoreKernelIpcProxyServices();
+            return false;
+        }
+        var services_restored = false;
+        defer if (!services_restored) {
+            _ = self.restoreKernelIpcProxyServices();
+        };
+        if (!self.waitForKernelIpcQuiescence(&net)) return false;
+
         var repetition: u8 = 0;
         while (repetition < self.config.repetitions) : (repetition += 1) {
-            var before: r4os.abi.IpcPerformanceSummary = .{};
-            if (net.ipcPerformance(0, &before) <= 0 or !ipcPerformanceContractOk(before)) return false;
+            var accepted = false;
+            var attempt: u8 = 0;
+            while (attempt < measurement.kernel_ipc_max_attempts_per_sample) : (attempt += 1) {
+                var before: KernelIpcPerformanceSnapshots = .{r4os.abi.IpcPerformanceSummary{}} ** kernel_ipc_channels.len;
+                if (!captureKernelIpcPerformance(&net, &before)) return false;
 
-            var clock_start: r4os.abi.MonotonicClockInfo = .{};
-            if (!self.queryMonotonicClock(&clock_start)) return false;
-            var iteration: u64 = 0;
-            while (iteration < measurement.kernel_ipc_iterations_per_sample) : (iteration += 1) {
-                const request_base: u32 = 0x6912_0000 +
-                    @as(u32, repetition) * 0x1000 +
-                    @as(u32, @intCast(iteration)) * 16;
-                for (status_cases, 0..) |case, case_index| {
+                var clock_start: r4os.abi.MonotonicClockInfo = .{};
+                if (!self.queryMonotonicClock(&clock_start)) return false;
+                var iteration: u64 = 0;
+                while (iteration < measurement.kernel_ipc_iterations_per_sample) : (iteration += 1) {
+                    const request_base: u32 = 0x6912_0000 +
+                        @as(u32, repetition) * 0x1000 +
+                        @as(u32, attempt) * 0x0400 +
+                        @as(u32, @intCast(iteration)) * 16;
+                    for (status_cases, 0..) |case, case_index| {
+                        if (!kernelIpcRequest(
+                            &net,
+                            case.channel,
+                            case.op,
+                            request_base + @as(u32, @intCast(case_index)),
+                            "",
+                            r4os.abi.net_service_result_ok,
+                            true,
+                        )) return false;
+                    }
+                    for (status_cases, 0..) |case, case_index| {
+                        if (!kernelIpcRequest(
+                            &net,
+                            case.channel,
+                            0xFFFE,
+                            request_base + 4 + @as(u32, @intCast(case_index)),
+                            "",
+                            r4os.abi.net_service_result_bad_op,
+                            false,
+                        )) return false;
+                    }
                     if (!kernelIpcRequest(
                         &net,
-                        case.channel,
-                        case.op,
-                        request_base + @as(u32, @intCast(case_index)),
-                        "",
-                        r4os.abi.net_service_result_ok,
-                        true,
-                    )) return false;
-                }
-                for (status_cases, 0..) |case, case_index| {
-                    if (!kernelIpcRequest(
-                        &net,
-                        case.channel,
-                        0xFFFE,
-                        request_base + 4 + @as(u32, @intCast(case_index)),
-                        "",
+                        kernel_ipc_channels[1],
+                        0xFFFF,
+                        request_base + 8,
+                        maximum_payload[0..],
                         r4os.abi.net_service_result_bad_op,
                         false,
                     )) return false;
                 }
-                if (!kernelIpcRequest(
-                    &net,
-                    r4os.abi.ipc_channel_net_dns,
-                    0xFFFF,
-                    request_base + 8,
-                    maximum_payload[0..],
-                    r4os.abi.net_service_result_bad_op,
-                    false,
-                )) return false;
+                var clock_end: r4os.abi.MonotonicClockInfo = .{};
+                if (!self.queryMonotonicClock(&clock_end) or
+                    clock_end.generation != clock_start.generation or
+                    clock_end.instant_ns <= clock_start.instant_ns) return false;
+                var after: KernelIpcPerformanceSnapshots = .{r4os.abi.IpcPerformanceSummary{}} ** kernel_ipc_channels.len;
+                if (!captureKernelIpcPerformance(&net, &after)) return false;
+
+                const elapsed_ns = clock_end.instant_ns - clock_start.instant_ns;
+                var sample = KernelIpcSample{
+                    .repetition = repetition + 1,
+                    .attempt = attempt + 1,
+                    .iterations = measurement.kernel_ipc_iterations_per_sample,
+                    .requests = requests,
+                    .status_requests = status_requests,
+                    .error_requests = requests - status_requests,
+                    .small_requests = small_requests,
+                    .max_requests = max_requests,
+                    .elapsed_ns = elapsed_ns,
+                    .caller_ns_per_request = elapsed_ns / requests,
+                };
+                for (before, after) |channel_before, channel_after| {
+                    sample.handler_queued = sample.handler_queued +| counterDelta(channel_before.handler_queued, channel_after.handler_queued);
+                    sample.handler_completed = sample.handler_completed +| counterDelta(channel_before.handler_completed, channel_after.handler_completed);
+                    sample.handler_failures = sample.handler_failures +| counterDelta(channel_before.handler_failures, channel_after.handler_failures);
+                    sample.handler_direct = sample.handler_direct +| counterDelta(channel_before.handler_direct, channel_after.handler_direct);
+                    sample.handler_waits = sample.handler_waits +| counterDelta(channel_before.handler_waits, channel_after.handler_waits);
+                    sample.handler_wait_timeouts = sample.handler_wait_timeouts +| counterDelta(channel_before.handler_wait_timeouts, channel_after.handler_wait_timeouts);
+                    sample.handler_queue_ns = sample.handler_queue_ns +| counterDelta(channel_before.handler_queue_ns, channel_after.handler_queue_ns);
+                    sample.handler_queue_max_before_ns = @max(sample.handler_queue_max_before_ns, channel_before.handler_queue_max_ns);
+                    sample.handler_queue_max_ns = @max(sample.handler_queue_max_ns, channel_after.handler_queue_max_ns);
+                    sample.handler_run_ns = sample.handler_run_ns +| counterDelta(channel_before.handler_run_ns, channel_after.handler_run_ns);
+                    sample.handler_run_max_before_ns = @max(sample.handler_run_max_before_ns, channel_before.handler_run_max_ns);
+                    sample.handler_run_max_ns = @max(sample.handler_run_max_ns, channel_after.handler_run_max_ns);
+                    sample.handler_e2e_ns = sample.handler_e2e_ns +| counterDelta(channel_before.handler_e2e_ns, channel_after.handler_e2e_ns);
+                    sample.handler_e2e_max_before_ns = @max(sample.handler_e2e_max_before_ns, channel_before.handler_e2e_max_ns);
+                    sample.handler_e2e_max_ns = @max(sample.handler_e2e_max_ns, channel_after.handler_e2e_max_ns);
+                    sample.request_bytes = sample.request_bytes +| counterDelta(channel_before.request_bytes, channel_after.request_bytes);
+                    sample.response_bytes = sample.response_bytes +| counterDelta(channel_before.response_bytes, channel_after.response_bytes);
+                    sample.payload_copy_bytes = sample.payload_copy_bytes +| counterDelta(channel_before.payload_copy_bytes, channel_after.payload_copy_bytes);
+                    sample.payload_clear_bytes = sample.payload_clear_bytes +| counterDelta(channel_before.payload_clear_bytes, channel_after.payload_clear_bytes);
+                    sample.queue_full = sample.queue_full +| counterDelta(channel_before.queue_full, channel_after.queue_full);
+                    sample.queue_empty = sample.queue_empty +| counterDelta(channel_before.queue_empty, channel_after.queue_empty);
+                    sample.admission_waits = sample.admission_waits +| counterDelta(channel_before.admission_waits, channel_after.admission_waits);
+                    sample.admission_timeouts = sample.admission_timeouts +| counterDelta(channel_before.admission_timeouts, channel_after.admission_timeouts);
+                    sample.recv_buffer_small = sample.recv_buffer_small +| counterDelta(channel_before.recv_buffer_small, channel_after.recv_buffer_small);
+                    sample.response_search_slots = sample.response_search_slots +| counterDelta(channel_before.response_search_slots, channel_after.response_search_slots);
+                    sample.stale_drops = sample.stale_drops +| counterDelta(channel_before.stale_drops, channel_after.stale_drops);
+                    sample.lock_contentions = sample.lock_contentions +| counterDelta(channel_before.lock_contentions, channel_after.lock_contentions);
+                    sample.irq_denied = sample.irq_denied +| counterDelta(channel_before.irq_denied, channel_after.irq_denied);
+                    sample.queue_used_after = sample.queue_used_after +| channel_after.queue_used;
+                }
+                sample.handler_queue_ns_per_request = sample.handler_queue_ns / requests;
+                sample.handler_run_ns_per_request = sample.handler_run_ns / requests;
+                sample.handler_e2e_ns_per_request = sample.handler_e2e_ns / requests;
+
+                const sample_ok = sample.handler_queued == requests and
+                    sample.handler_completed == requests and
+                    sample.handler_failures == 0 and
+                    sample.handler_direct == 0 and
+                    sample.handler_waits == requests and
+                    sample.handler_wait_timeouts == 0 and
+                    sample.request_bytes == expected_request_bytes and
+                    sample.response_bytes >= minimum_response_bytes and
+                    sample.payload_copy_bytes >= sample.request_bytes + sample.response_bytes and
+                    sample.payload_clear_bytes == 0 and
+                    sample.queue_full == 0 and
+                    sample.admission_timeouts == 0 and
+                    sample.recv_buffer_small == 0 and
+                    sample.response_search_slots == 0 and
+                    sample.stale_drops == 0 and
+                    sample.irq_denied == 0 and
+                    sample.queue_used_after == 0;
+                if (sample_ok) {
+                    self.stats.kernel_ipc_samples[self.stats.kernel_ipc_sample_count] = sample;
+                    self.stats.kernel_ipc_sample_count += 1;
+                    accepted = true;
+                    break;
+                }
+
+                const concurrent_contamination = self.config.cache_state == .warm and
+                    kernelIpcSampleHasConcurrentTraffic(sample, requests, expected_request_bytes, minimum_response_bytes);
+                if (!concurrent_contamination) return false;
+                self.stats.kernel_ipc_discarded_attempts +%= 1;
+                if (attempt + 1 < measurement.kernel_ipc_max_attempts_per_sample) self.sys.sleepTicks(1);
             }
-            var clock_end: r4os.abi.MonotonicClockInfo = .{};
-            if (!self.queryMonotonicClock(&clock_end) or
-                clock_end.generation != clock_start.generation or
-                clock_end.instant_ns <= clock_start.instant_ns) return false;
-            var after: r4os.abi.IpcPerformanceSummary = .{};
-            if (net.ipcPerformance(0, &after) <= 0 or !ipcPerformanceContractOk(after)) return false;
-
-            const requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_requests_per_iteration;
-            const status_requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_status_requests_per_iteration;
-            const small_requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_small_requests_per_iteration;
-            const max_requests = measurement.kernel_ipc_iterations_per_sample * measurement.kernel_ipc_max_requests_per_iteration;
-            const elapsed_ns = clock_end.instant_ns - clock_start.instant_ns;
-            const sample = KernelIpcSample{
-                .repetition = repetition + 1,
-                .iterations = measurement.kernel_ipc_iterations_per_sample,
-                .requests = requests,
-                .status_requests = status_requests,
-                .error_requests = requests - status_requests,
-                .small_requests = small_requests,
-                .max_requests = max_requests,
-                .elapsed_ns = elapsed_ns,
-                .caller_ns_per_request = elapsed_ns / requests,
-                .handler_queued = counterDelta(before.handler_queued, after.handler_queued),
-                .handler_completed = counterDelta(before.handler_completed, after.handler_completed),
-                .handler_failures = counterDelta(before.handler_failures, after.handler_failures),
-                .handler_direct = counterDelta(before.handler_direct, after.handler_direct),
-                .handler_waits = counterDelta(before.handler_waits, after.handler_waits),
-                .handler_wait_timeouts = counterDelta(before.handler_wait_timeouts, after.handler_wait_timeouts),
-                .handler_queue_ns = counterDelta(before.handler_queue_ns, after.handler_queue_ns),
-                .handler_queue_ns_per_request = counterDelta(before.handler_queue_ns, after.handler_queue_ns) / requests,
-                .handler_queue_max_before_ns = before.handler_queue_max_ns,
-                .handler_queue_max_ns = after.handler_queue_max_ns,
-                .handler_run_ns = counterDelta(before.handler_run_ns, after.handler_run_ns),
-                .handler_run_ns_per_request = counterDelta(before.handler_run_ns, after.handler_run_ns) / requests,
-                .handler_run_max_before_ns = before.handler_run_max_ns,
-                .handler_run_max_ns = after.handler_run_max_ns,
-                .handler_e2e_ns = counterDelta(before.handler_e2e_ns, after.handler_e2e_ns),
-                .handler_e2e_ns_per_request = counterDelta(before.handler_e2e_ns, after.handler_e2e_ns) / requests,
-                .handler_e2e_max_before_ns = before.handler_e2e_max_ns,
-                .handler_e2e_max_ns = after.handler_e2e_max_ns,
-                .request_bytes = counterDelta(before.request_bytes, after.request_bytes),
-                .response_bytes = counterDelta(before.response_bytes, after.response_bytes),
-                .payload_copy_bytes = counterDelta(before.payload_copy_bytes, after.payload_copy_bytes),
-                .payload_clear_bytes = counterDelta(before.payload_clear_bytes, after.payload_clear_bytes),
-                .queue_full = counterDelta(before.queue_full, after.queue_full),
-                .queue_empty = counterDelta(before.queue_empty, after.queue_empty),
-                .admission_waits = counterDelta(before.admission_waits, after.admission_waits),
-                .admission_timeouts = counterDelta(before.admission_timeouts, after.admission_timeouts),
-                .recv_buffer_small = counterDelta(before.recv_buffer_small, after.recv_buffer_small),
-                .response_search_slots = counterDelta(before.response_search_slots, after.response_search_slots),
-                .stale_drops = counterDelta(before.stale_drops, after.stale_drops),
-                .lock_contentions = counterDelta(before.lock_contentions, after.lock_contentions),
-                .irq_denied = counterDelta(before.irq_denied, after.irq_denied),
-                .queue_used_after = after.queue_used,
-            };
-            self.stats.kernel_ipc_samples[self.stats.kernel_ipc_sample_count] = sample;
-            self.stats.kernel_ipc_sample_count += 1;
-
-            const expected_request_bytes = small_requests * r4os.abi.net_service_header_size +
-                max_requests * r4os.abi.ipc_max_message_size;
-            const sample_ok = after.worker_started != 0 and
-                after.queue_limit >= r4os.abi.ipc_queue_depth and
-                sample.handler_queued == requests and
-                sample.handler_completed == requests and
-                sample.handler_failures == 0 and
-                sample.handler_direct == 0 and
-                sample.handler_waits == requests and
-                sample.handler_wait_timeouts == 0 and
-                sample.request_bytes == expected_request_bytes and
-                sample.response_bytes >= requests * r4os.abi.net_service_header_size and
-                sample.payload_copy_bytes >= sample.request_bytes + sample.response_bytes and
-                sample.payload_clear_bytes == 0 and
-                sample.queue_full == 0 and
-                sample.admission_timeouts == 0 and
-                sample.recv_buffer_small == 0 and
-                sample.response_search_slots == 0 and
-                sample.stale_drops == 0 and
-                sample.irq_denied == 0 and
-                sample.queue_used_after == 0;
-            if (!sample_ok) return false;
+            if (!accepted) return false;
         }
-        return self.stats.kernel_ipc_sample_count == self.config.repetitions;
+        const samples_ok = self.stats.kernel_ipc_sample_count == self.config.repetitions;
+        const restore_ok = self.restoreKernelIpcProxyServices();
+        services_restored = true;
+        return samples_ok and restore_ok;
+    }
+
+    fn isolateKernelIpcProxyServices(self: *App) bool {
+        self.stats.kernel_ipc_isolation_stop_attempts = 0;
+        self.stats.kernel_ipc_isolation_stopped = 0;
+        self.stats.kernel_ipc_isolation_already_stopped = 0;
+        self.stats.kernel_ipc_isolation_stop_mask = 0;
+        self.stats.kernel_ipc_isolation_restore_attempts = 0;
+        self.stats.kernel_ipc_isolation_restored = 0;
+        self.stats.kernel_ipc_isolation_restore_ok = false;
+
+        const stop_timeout_ticks = self.sys.ticksFromMilliseconds(measurement.kernel_ipc_service_stop_timeout_ms);
+        const retry_delay_ticks = @max(self.sys.ticksFromMilliseconds(measurement.kernel_ipc_service_retry_delay_ms), 1);
+        if (stop_timeout_ticks == 0) return false;
+
+        for (kernel_ipc_proxy_services, 0..) |service_name, service_index| {
+            var settled = false;
+            var attempt: u8 = 0;
+            while (attempt < measurement.kernel_ipc_service_transition_max_attempts) : (attempt += 1) {
+                var info: r4os.abi.ServiceInfo = .{};
+                self.stats.kernel_ipc_isolation_stop_attempts +%= 1;
+                const rc = self.sys.serviceStop(service_name.ptr, &info, stop_timeout_ticks);
+                if (rc == r4os.abi.service_api_result_ok) {
+                    self.stats.kernel_ipc_isolation_stop_mask |= @as(u32, 1) << @intCast(service_index);
+                    self.stats.kernel_ipc_isolation_stopped +%= 1;
+                    settled = true;
+                    break;
+                }
+                if (rc == r4os.abi.service_api_result_not_running) {
+                    self.stats.kernel_ipc_isolation_already_stopped +%= 1;
+                    settled = true;
+                    break;
+                }
+                if (rc != r4os.abi.service_api_result_busy) return false;
+                if (attempt + 1 < measurement.kernel_ipc_service_transition_max_attempts) {
+                    self.sys.sleepTicks(retry_delay_ticks);
+                }
+            }
+            if (!settled) return false;
+        }
+        return true;
+    }
+
+    fn restoreKernelIpcProxyServices(self: *App) bool {
+        const retry_delay_ticks = @max(self.sys.ticksFromMilliseconds(measurement.kernel_ipc_service_retry_delay_ms), 1);
+        var all_restored = true;
+        var service_index = kernel_ipc_proxy_services.len;
+        while (service_index > 0) {
+            service_index -= 1;
+            const service_bit = @as(u32, 1) << @intCast(service_index);
+            if (self.stats.kernel_ipc_isolation_stop_mask & service_bit == 0) continue;
+
+            const service_name = kernel_ipc_proxy_services[service_index];
+            var restored = false;
+            var attempt: u8 = 0;
+            while (attempt < measurement.kernel_ipc_service_transition_max_attempts) : (attempt += 1) {
+                var info: r4os.abi.ServiceInfo = .{};
+                self.stats.kernel_ipc_isolation_restore_attempts +%= 1;
+                const rc = self.sys.serviceStart(service_name.ptr, &info);
+                if (rc == r4os.abi.service_api_result_ok or rc == r4os.abi.service_api_result_running) {
+                    self.stats.kernel_ipc_isolation_restored +%= 1;
+                    restored = true;
+                    break;
+                }
+                if (rc != r4os.abi.service_api_result_busy) break;
+                if (attempt + 1 < measurement.kernel_ipc_service_transition_max_attempts) {
+                    self.sys.sleepTicks(retry_delay_ticks);
+                }
+            }
+            if (!restored) all_restored = false;
+        }
+        self.stats.kernel_ipc_isolation_restore_ok = all_restored and
+            self.stats.kernel_ipc_isolation_restored == self.stats.kernel_ipc_isolation_stopped;
+        return self.stats.kernel_ipc_isolation_restore_ok;
+    }
+
+    fn waitForKernelIpcQuiescence(self: *App, net: *const r4os.r4net.Context) bool {
+        if (self.config.cache_state != .warm) {
+            self.stats.kernel_ipc_quiescence_reached = true;
+            return true;
+        }
+        const quiet_ticks = measurement.ticksForMilliseconds(self.eventHz(), measurement.kernel_ipc_quiet_period_ms);
+        const timeout_ticks = measurement.ticksForMilliseconds(self.eventHz(), measurement.kernel_ipc_quiescence_timeout_ms);
+        if (quiet_ticks == 0 or timeout_ticks < quiet_ticks) return false;
+
+        var previous: KernelIpcPerformanceSnapshots = .{r4os.abi.IpcPerformanceSummary{}} ** kernel_ipc_channels.len;
+        if (!captureKernelIpcPerformance(net, &previous)) return false;
+        var stable_ticks: u64 = 0;
+        var waited_ticks: u64 = 0;
+        while (waited_ticks < timeout_ticks) {
+            self.sys.sleepTicks(1);
+            waited_ticks += 1;
+            self.stats.kernel_ipc_quiescence_wait_ticks = waited_ticks;
+
+            var current: KernelIpcPerformanceSnapshots = .{r4os.abi.IpcPerformanceSummary{}} ** kernel_ipc_channels.len;
+            if (!captureKernelIpcPerformance(net, &current)) return false;
+            if (kernelIpcPerformanceQuiet(&previous, &current)) {
+                stable_ticks += 1;
+            } else {
+                stable_ticks = 0;
+            }
+            previous = current;
+            if (stable_ticks >= quiet_ticks) {
+                self.stats.kernel_ipc_quiescence_reached = true;
+                return true;
+            }
+        }
+        return false;
     }
 
     fn printKernelIpcResults(self: *App) void {
+        self.sys.write("  Kernel IPC proxy isolation stopped=");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_stopped);
+        self.sys.write(" alreadyStopped=");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_already_stopped);
+        self.sys.write(" stopAttempts=");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_stop_attempts);
+        self.sys.write(" restored=");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_restored);
+        self.sys.write(" restoreAttempts=");
+        self.sys.printU64(self.stats.kernel_ipc_isolation_restore_attempts);
+        self.sys.write(" restore=");
+        self.sys.write(if (self.stats.kernel_ipc_isolation_restore_ok) "OK" else "failed");
+        self.sys.println("");
+        self.sys.write("  Kernel IPC discarded concurrent attempts=");
+        self.sys.printU64(self.stats.kernel_ipc_discarded_attempts);
+        self.sys.write(" maxAttempts/sample=");
+        self.sys.printU64(measurement.kernel_ipc_max_attempts_per_sample);
+        self.sys.write(" quiescenceWaitTicks=");
+        self.sys.printU64(self.stats.kernel_ipc_quiescence_wait_ticks);
+        self.sys.write(" quietMs=");
+        self.sys.printU64(measurement.kernel_ipc_quiet_period_ms);
+        self.sys.write(" quiescence=");
+        self.sys.write(if (self.stats.kernel_ipc_quiescence_reached) "reached" else "failed");
+        self.sys.println("");
         var caller_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
         var queue_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
         var run_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
@@ -2910,6 +3121,8 @@ const App = struct {
             e2e_costs[index] = sample.handler_e2e_ns_per_request;
             self.sys.write("  Kernel IPC sample=");
             self.sys.printU64(sample.repetition);
+            self.sys.write(" attempt=");
+            self.sys.printU64(sample.attempt);
             self.sys.write(" requests=");
             self.sys.printU64(sample.requests);
             self.sys.write(" callerNs/request=");
@@ -6226,6 +6439,69 @@ fn kernelIpcRequest(
     const result_payload = net.netServicePayload(response[0..@intCast(got)], &status) orelse return false;
     if (status != expected_status) return false;
     return if (require_payload) result_payload.len != 0 else result_payload.len == 0;
+}
+
+fn captureKernelIpcPerformance(
+    net: *const r4os.r4net.Context,
+    out: *KernelIpcPerformanceSnapshots,
+) bool {
+    for (kernel_ipc_channels, 0..) |channel_id, index| {
+        out[index] = .{};
+        if (net.ipcPerformance(channel_id, &out[index]) <= 0 or
+            !ipcPerformanceContractOk(out[index]) or
+            out[index].active_channels != 1 or
+            out[index].queue_limit < r4os.abi.ipc_queue_depth or
+            out[index].queue_used > out[index].queue_limit) return false;
+    }
+    return true;
+}
+
+fn kernelIpcPerformanceQuiet(
+    previous: *const KernelIpcPerformanceSnapshots,
+    current: *const KernelIpcPerformanceSnapshots,
+) bool {
+    for (previous.*, current.*) |before, after| {
+        if (before.queue_used != 0 or before.queue_ready != 0 or before.queue_running != 0 or
+            after.queue_used != 0 or after.queue_ready != 0 or after.queue_running != 0 or
+            after.handler_queued != before.handler_queued or
+            after.handler_completed != before.handler_completed or
+            after.handler_failures != before.handler_failures or
+            after.handler_waits != before.handler_waits or
+            after.handler_wait_timeouts != before.handler_wait_timeouts or
+            after.request_bytes != before.request_bytes or
+            after.response_bytes != before.response_bytes or
+            after.queue_full != before.queue_full or
+            after.admission_timeouts != before.admission_timeouts or
+            after.stale_drops != before.stale_drops) return false;
+    }
+    return true;
+}
+
+fn kernelIpcSampleHasConcurrentTraffic(
+    sample: KernelIpcSample,
+    requests: u64,
+    expected_request_bytes: u64,
+    minimum_response_bytes: u64,
+) bool {
+    const copied_request_and_response = sample.payload_copy_bytes >= sample.request_bytes and
+        sample.payload_copy_bytes - sample.request_bytes >= sample.response_bytes;
+    return sample.handler_queued > requests and
+        sample.handler_completed == sample.handler_queued and
+        sample.handler_waits == sample.handler_queued and
+        sample.handler_failures == 0 and
+        sample.handler_direct == 0 and
+        sample.handler_wait_timeouts == 0 and
+        sample.request_bytes > expected_request_bytes and
+        sample.response_bytes >= minimum_response_bytes and
+        copied_request_and_response and
+        sample.payload_clear_bytes == 0 and
+        sample.queue_full == 0 and
+        sample.admission_timeouts == 0 and
+        sample.recv_buffer_small == 0 and
+        sample.response_search_slots == 0 and
+        sample.stale_drops == 0 and
+        sample.irq_denied == 0 and
+        sample.queue_used_after == 0;
 }
 
 fn ipcPerformanceContractOk(summary: r4os.abi.IpcPerformanceSummary) bool {
