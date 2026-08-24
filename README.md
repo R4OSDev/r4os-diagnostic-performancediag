@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.10`
+- Version: `0.3.11`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -36,6 +36,7 @@ modes are:
     PERFDIAG /BENCHMARK /KERNEL-IPC /REPEAT:5 /WARM
     PERFDIAG /BENCHMARK /DRIVER-WORK /REPEAT:5 /WARM
     PERFDIAG /BENCHMARK /PCI-INVENTORY /REPEAT:5 /WARM
+    PERFDIAG /BENCHMARK /MEMORY-METADATA /REPEAT:5 /WARM
 
 `/BASELINE` captures a summary before any optional workload. `/CONFORMANCE`
 runs the state-changing contract probes and does not claim a performance
@@ -58,13 +59,17 @@ a measured channel is discarded and retried at most twice. Real IPC errors,
 failed isolation or restoration, a failed 10-second quiescence bound, and an
 exhausted three-attempt bound still fail the run. Isolation, quiescence,
 discard counts, and the accepted attempt number remain visible in the
-human-readable and NDJSON v6 output.
+human-readable and NDJSON v7 output.
 `/BENCHMARK /DRIVER-WORK` measures a
 fixed HDA workload against the active driver owner. `/BENCHMARK
 /PCI-INVENTORY` performs 100 complete DeviceInventory summary-and-record
 workloads per sample and proves with before/after counters that the cached
 consumer path performs no PCI configuration or ECAM mapping work. Every
-successful run ends with a delimited, versioned NDJSON v6
+`/BENCHMARK /MEMORY-METADATA` measures eight-page reserve/commit, demand-fault,
+Page-State, and multi-frame reclaim phases separately. It preserves physical
+block, range, local span, and persistent reclaim-cursor step counters so tail
+scans remain visible beside latency distributions. Every successful run ends
+with a delimited, versioned NDJSON v7
 result block containing clock source and quality, the event backend and exact
 rate, run metadata, raw samples, distributions, checks, missing measurement
 flags, and measured summary-query overhead.

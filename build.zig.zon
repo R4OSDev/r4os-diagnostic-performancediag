@@ -1,6 +1,6 @@
 .{
     .name = .r4os_perfdiag,
-    .version = "0.3.10",
+    .version = "0.3.11",
     .fingerprint = 0xc87eb2e72daa6669,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

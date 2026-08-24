@@ -49,6 +49,14 @@ PERFDIAG trennt passive Aufnahme, Vertragskonformitaet und Benchmark:
   Found/Stored/Dropped/Truncated, Probe- und Configarbeit sowie die
   Enumerationszeit beziehungsweise deren expliziter Unavailable-Zaehler
   bleiben als harte Rohwerte sichtbar.
+- /BENCHMARK /MEMORY-METADATA misst pro Wiederholung acht Seiten in vier
+  getrennten Phasen: Reserve/Commit, 4-KiB-Demand-Faults, genau eine
+  Page-State-Operation ueber den Zielbereich und Multi-Frame-Reclaim. Neben
+  ns/Seite beziehungsweise ns/Frame bleiben die Suchschritte der physischen
+  Block- und ID-Indizes, der freien Slot-Bitmap, des Range-Adressindex, der
+  lokalen Commit-/Page-State-Listen und des persistenten Reclaim-Cursors als
+  Rohwerte sichtbar. Rollback, Index-Rebuild, Besitzer-, Mapping- und
+  Nonresident-/Slot-Bilanzen sind harte Gueltigkeitszaeune.
 
 Der Konformitaetsmodus prueft den aktuellen R4DEV-Performancevertrag und
 fachliche Subsystemwerte:
@@ -77,7 +85,7 @@ p50, p95, p99, Maximum und Mittel aus, so dass auch kleine reproduzierbare
 Verbesserungen bewertet werden koennen.
 
 Die menschenlesbare Ausgabe endet mit einem abgegrenzten, versionierten
-NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 6. Er enthaelt Modus,
+NDJSON-Block des Schemas r4os.perfdiag.ndjson Version 7. Er enthaelt Modus,
 Modul-, Kernel- und API-Version, Clockquelle und -qualitaet, Ereignisbackend
 und rationale Rate, Kalt-/Warmstatus, Wiederholungen, Rohwerte, Einheiten,
 Checks, fehlende Messklassen und die beobachteten Eigenkosten aller

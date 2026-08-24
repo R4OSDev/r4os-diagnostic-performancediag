@@ -1,11 +1,13 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.10";
+const module_version = "0.3.11";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
+const memory_metadata_backing_store_path = "D:\\TEMP\\R4MEMIDX.BIN";
 const backing_store_bytes: u64 = 64 * 1024;
+const memory_metadata_backing_store_bytes: u64 = 256 * 1024;
 const backing_store_slot_count: u64 = backing_store_bytes / 4096;
 const backing_store_slot_reserve: u64 = 4;
 const backing_store_slot_owner: u32 = 0x50455246;
@@ -286,6 +288,62 @@ const PciInventorySample = struct {
     checksum: u64 = 0,
 };
 
+const MemoryMetadataSample = struct {
+    repetition: u8 = 0,
+    pages: u64 = 0,
+    reserve_commit_elapsed_ns: u64 = 0,
+    reserve_commit_ns_per_page: u64 = 0,
+    fault_elapsed_ns: u64 = 0,
+    fault_ns_per_page: u64 = 0,
+    page_state_elapsed_ns: u64 = 0,
+    page_state_ns_per_page: u64 = 0,
+    reclaim_elapsed_ns: u64 = 0,
+    reclaim_ns_per_vm_frame: u64 = 0,
+    reclaim_attempts: u32 = 0,
+    reclaim_requested_frames: u64 = 0,
+    reclaim_returned_frames: u64 = 0,
+    reclaim_fs_returned_frames: u64 = 0,
+    reclaim_vm_returned_frames: u64 = 0,
+    reclaim_vm_page_outs: u64 = 0,
+    reclaim_vm_failures: u64 = 0,
+    target_committed_pages: u64 = 0,
+    target_resident_pages: u64 = 0,
+    target_nonresident_pages: u64 = 0,
+    target_clean_pages: u64 = 0,
+    target_slot_bound_pages: u64 = 0,
+    block_physical_index_entries: u32 = 0,
+    block_physical_step_max: u32 = 0,
+    block_id_index_entries: u32 = 0,
+    block_id_step_max: u32 = 0,
+    block_free_slot_word_step_max: u32 = 0,
+    range_address_entries: u32 = 0,
+    range_address_probe_max: u32 = 0,
+    commit_span_active: u32 = 0,
+    commit_span_step_max: u32 = 0,
+    page_state_span_active: u32 = 0,
+    page_state_span_step_max: u32 = 0,
+    block_physical_lookups: u64 = 0,
+    block_physical_steps: u64 = 0,
+    block_physical_mutations: u64 = 0,
+    block_physical_rebuilds: u64 = 0,
+    block_id_lookups: u64 = 0,
+    block_id_steps: u64 = 0,
+    block_free_slot_lookups: u64 = 0,
+    block_free_slot_word_steps: u64 = 0,
+    block_claim_transactions: u64 = 0,
+    block_claim_rollbacks: u64 = 0,
+    range_address_lookups: u64 = 0,
+    range_address_probes: u64 = 0,
+    commit_span_lookups: u64 = 0,
+    commit_span_steps: u64 = 0,
+    page_state_span_lookups: u64 = 0,
+    page_state_span_steps: u64 = 0,
+    reclaim_range_steps: u64 = 0,
+    reclaim_span_steps: u64 = 0,
+    reclaim_page_steps: u64 = 0,
+    reclaim_wraps: u64 = 0,
+};
+
 const RunStats = struct {
     summary_query_attempts: u32 = 0,
     summary_query_successes: u32 = 0,
@@ -317,6 +375,8 @@ const RunStats = struct {
     driver_work_sample_count: usize = 0,
     pci_inventory_samples: [measurement.max_repetitions]PciInventorySample = .{PciInventorySample{}} ** measurement.max_repetitions,
     pci_inventory_sample_count: usize = 0,
+    memory_metadata_samples: [measurement.max_repetitions]MemoryMetadataSample = .{MemoryMetadataSample{}} ** measurement.max_repetitions,
+    memory_metadata_sample_count: usize = 0,
 };
 const avx_pattern_a: [32]u8 align(32) = .{
     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
@@ -475,6 +535,7 @@ const App = struct {
                     .kernel_ipc => self.probeKernelIpc(),
                     .driver_work => self.probeDriverWork(),
                     .pci_inventory => self.probePciInventory(),
+                    .memory_metadata => self.probeMemoryMetadata(),
                 };
                 if (self.captureSummary()) |summary| {
                     post_summary = summary;
@@ -507,6 +568,10 @@ const App = struct {
                     .pci_inventory => {
                         self.printPciInventoryResults();
                         self.printCheck("Canonical PCI inventory benchmark", ok);
+                    },
+                    .memory_metadata => {
+                        self.printMemoryMetadataResults();
+                        self.printCheck("Indexed memory metadata benchmark", ok);
                     },
                 }
             },
@@ -627,6 +692,7 @@ const App = struct {
         self.sys.println("  PERFDIAG /BENCHMARK /KERNEL-IPC /REPEAT:5 /WARM");
         self.sys.println("  PERFDIAG /BENCHMARK /DRIVER-WORK /REPEAT:5 /WARM");
         self.sys.println("  PERFDIAG /BENCHMARK /PCI-INVENTORY /REPEAT:5 /WARM");
+        self.sys.println("  PERFDIAG /BENCHMARK /MEMORY-METADATA /REPEAT:5 /WARM");
         self.sys.println("No mode runs the passive baseline. Repetitions: 3..20.");
     }
 
@@ -952,6 +1018,7 @@ const App = struct {
         self.printKernelIpcMachineResults();
         self.printDriverWorkMachineResults();
         self.printPciInventoryMachineResults();
+        self.printMemoryMetadataMachineResults();
 
         self.machineLinePrefix("observer");
         self.sys.write(",\"summary_query_attempts\":");
@@ -1241,6 +1308,98 @@ const App = struct {
         const distribution = measurement.summarize(costs[0..self.stats.pci_inventory_sample_count]);
         self.machineLinePrefix("pci_inventory_distribution");
         self.sys.write(",\"unit\":\"ns/inventory\"");
+        self.printJsonU64Field("count", distribution.count);
+        self.printJsonU64Field("min", distribution.minimum);
+        self.printJsonU64Field("p50", distribution.p50);
+        self.printJsonU64Field("p95", distribution.p95);
+        self.printJsonU64Field("p99", distribution.p99);
+        self.printJsonU64Field("max", distribution.maximum);
+        self.printJsonU64Field("mean", distribution.mean);
+        self.sys.println("}");
+    }
+
+    fn printMemoryMetadataMachineResults(self: *App) void {
+        if (self.stats.memory_metadata_sample_count == 0) return;
+        var reserve_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var fault_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var state_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var reclaim_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.memory_metadata_sample_count) : (index += 1) {
+            const sample = self.stats.memory_metadata_samples[index];
+            reserve_costs[index] = sample.reserve_commit_ns_per_page;
+            fault_costs[index] = sample.fault_ns_per_page;
+            state_costs[index] = sample.page_state_ns_per_page;
+            reclaim_costs[index] = sample.reclaim_ns_per_vm_frame;
+            self.machineLinePrefix("memory_metadata_sample");
+            self.printJsonU64Field("sample", sample.repetition);
+            self.printJsonU64Field("pages", sample.pages);
+            self.printJsonU64Field("reserve_commit_elapsed_ns", sample.reserve_commit_elapsed_ns);
+            self.printJsonU64Field("reserve_commit_ns_per_page", sample.reserve_commit_ns_per_page);
+            self.printJsonU64Field("fault_elapsed_ns", sample.fault_elapsed_ns);
+            self.printJsonU64Field("fault_ns_per_page", sample.fault_ns_per_page);
+            self.printJsonU64Field("page_state_elapsed_ns", sample.page_state_elapsed_ns);
+            self.printJsonU64Field("page_state_ns_per_page", sample.page_state_ns_per_page);
+            self.printJsonU64Field("reclaim_elapsed_ns", sample.reclaim_elapsed_ns);
+            self.printJsonU64Field("reclaim_ns_per_vm_frame", sample.reclaim_ns_per_vm_frame);
+            self.printJsonU64Field("reclaim_attempts", sample.reclaim_attempts);
+            self.printJsonU64Field("reclaim_requested_frames", sample.reclaim_requested_frames);
+            self.printJsonU64Field("reclaim_returned_frames", sample.reclaim_returned_frames);
+            self.printJsonU64Field("reclaim_fs_returned_frames", sample.reclaim_fs_returned_frames);
+            self.printJsonU64Field("reclaim_vm_returned_frames", sample.reclaim_vm_returned_frames);
+            self.printJsonU64Field("reclaim_vm_page_outs", sample.reclaim_vm_page_outs);
+            self.printJsonU64Field("reclaim_vm_failures", sample.reclaim_vm_failures);
+            self.printJsonU64Field("target_committed_pages", sample.target_committed_pages);
+            self.printJsonU64Field("target_resident_pages", sample.target_resident_pages);
+            self.printJsonU64Field("target_nonresident_pages", sample.target_nonresident_pages);
+            self.printJsonU64Field("target_clean_pages", sample.target_clean_pages);
+            self.printJsonU64Field("target_slot_bound_pages", sample.target_slot_bound_pages);
+            self.printJsonU64Field("block_physical_index_entries", sample.block_physical_index_entries);
+            self.printJsonU64Field("block_physical_step_max", sample.block_physical_step_max);
+            self.printJsonU64Field("block_id_index_entries", sample.block_id_index_entries);
+            self.printJsonU64Field("block_id_step_max", sample.block_id_step_max);
+            self.printJsonU64Field("block_free_slot_word_step_max", sample.block_free_slot_word_step_max);
+            self.printJsonU64Field("range_address_entries", sample.range_address_entries);
+            self.printJsonU64Field("range_address_probe_max", sample.range_address_probe_max);
+            self.printJsonU64Field("commit_span_active", sample.commit_span_active);
+            self.printJsonU64Field("commit_span_step_max", sample.commit_span_step_max);
+            self.printJsonU64Field("page_state_span_active", sample.page_state_span_active);
+            self.printJsonU64Field("page_state_span_step_max", sample.page_state_span_step_max);
+            self.printJsonU64Field("block_physical_lookups", sample.block_physical_lookups);
+            self.printJsonU64Field("block_physical_steps", sample.block_physical_steps);
+            self.printJsonU64Field("block_physical_mutations", sample.block_physical_mutations);
+            self.printJsonU64Field("block_physical_rebuilds", sample.block_physical_rebuilds);
+            self.printJsonU64Field("block_id_lookups", sample.block_id_lookups);
+            self.printJsonU64Field("block_id_steps", sample.block_id_steps);
+            self.printJsonU64Field("block_free_slot_lookups", sample.block_free_slot_lookups);
+            self.printJsonU64Field("block_free_slot_word_steps", sample.block_free_slot_word_steps);
+            self.printJsonU64Field("block_claim_transactions", sample.block_claim_transactions);
+            self.printJsonU64Field("block_claim_rollbacks", sample.block_claim_rollbacks);
+            self.printJsonU64Field("range_address_lookups", sample.range_address_lookups);
+            self.printJsonU64Field("range_address_probes", sample.range_address_probes);
+            self.printJsonU64Field("commit_span_lookups", sample.commit_span_lookups);
+            self.printJsonU64Field("commit_span_steps", sample.commit_span_steps);
+            self.printJsonU64Field("page_state_span_lookups", sample.page_state_span_lookups);
+            self.printJsonU64Field("page_state_span_steps", sample.page_state_span_steps);
+            self.printJsonU64Field("reclaim_range_steps", sample.reclaim_range_steps);
+            self.printJsonU64Field("reclaim_span_steps", sample.reclaim_span_steps);
+            self.printJsonU64Field("reclaim_page_steps", sample.reclaim_page_steps);
+            self.printJsonU64Field("reclaim_wraps", sample.reclaim_wraps);
+            self.sys.println("}");
+        }
+        self.printMemoryMetadataMachineDistribution("reserve-commit", "ns/page", reserve_costs[0..self.stats.memory_metadata_sample_count]);
+        self.printMemoryMetadataMachineDistribution("fault", "ns/page", fault_costs[0..self.stats.memory_metadata_sample_count]);
+        self.printMemoryMetadataMachineDistribution("page-state", "ns/page", state_costs[0..self.stats.memory_metadata_sample_count]);
+        self.printMemoryMetadataMachineDistribution("reclaim", "ns/frame", reclaim_costs[0..self.stats.memory_metadata_sample_count]);
+    }
+
+    fn printMemoryMetadataMachineDistribution(self: *App, metric: []const u8, unit: []const u8, values: []const u64) void {
+        const distribution = measurement.summarize(values);
+        self.machineLinePrefix("memory_metadata_distribution");
+        self.sys.write(",\"metric\":");
+        self.printJsonString(metric);
+        self.sys.write(",\"unit\":");
+        self.printJsonString(unit);
         self.printJsonU64Field("count", distribution.count);
         self.printJsonU64Field("min", distribution.minimum);
         self.printJsonU64Field("p50", distribution.p50);
@@ -1560,6 +1719,35 @@ const App = struct {
             summary.hot_path_vm_range_free_slot_lookups > 0 and
             summary.hot_path_vm_range_free_slot_probe_total >= summary.hot_path_vm_range_free_slot_lookups and
             summary.hot_path_vm_range_free_slot_probe_max >= summary.hot_path_vm_range_free_slot_probe_last and
+            summary.hot_path_memory_block_physical_index_entries > 0 and
+            summary.hot_path_memory_block_physical_step_max > 0 and summary.hot_path_memory_block_physical_step_max <= 32 and
+            summary.hot_path_memory_block_id_index_entries > 0 and
+            summary.hot_path_memory_block_id_step_max > 0 and summary.hot_path_memory_block_id_step_max <= 128 and
+            summary.hot_path_memory_block_free_slot_word_step_max > 0 and summary.hot_path_memory_block_free_slot_word_step_max <= 128 and
+            summary.hot_path_memory_block_physical_lookups > 0 and
+            summary.hot_path_memory_block_physical_steps >= summary.hot_path_memory_block_physical_lookups and
+            summary.hot_path_memory_block_physical_mutations > 0 and
+            summary.hot_path_memory_block_physical_rebuilds == 0 and
+            summary.hot_path_memory_block_id_lookups > 0 and
+            summary.hot_path_memory_block_id_steps >= summary.hot_path_memory_block_id_lookups and
+            summary.hot_path_memory_block_free_slot_lookups > 0 and
+            summary.hot_path_memory_block_free_slot_word_steps >= summary.hot_path_memory_block_free_slot_lookups and
+            summary.hot_path_memory_block_claim_transactions > 0 and
+            summary.hot_path_memory_block_claim_rollbacks == 0 and
+            summary.hot_path_memory_vm_range_address_entries > 0 and
+            summary.hot_path_memory_vm_range_address_probe_max >= summary.hot_path_memory_vm_range_address_probe_last and
+            summary.hot_path_memory_vm_range_address_probe_max <= 16 and
+            summary.hot_path_memory_vm_range_address_lookups > 0 and
+            summary.hot_path_memory_vm_range_address_probe_total >= summary.hot_path_memory_vm_range_address_lookups and
+            summary.hot_path_memory_vm_commit_span_active > 0 and
+            summary.hot_path_memory_vm_commit_span_step_max > 0 and summary.hot_path_memory_vm_commit_span_step_max <= 64 and
+            summary.hot_path_memory_vm_commit_span_lookups > 0 and summary.hot_path_memory_vm_commit_span_steps > 0 and
+            summary.hot_path_memory_vm_page_state_span_active > 0 and
+            summary.hot_path_memory_vm_page_state_span_step_max > 0 and summary.hot_path_memory_vm_page_state_span_step_max <= 64 and
+            summary.hot_path_memory_vm_page_state_span_lookups > 0 and summary.hot_path_memory_vm_page_state_span_steps > 0 and
+            summary.hot_path_memory_vm_reclaim_range_steps > 0 and
+            summary.hot_path_memory_vm_reclaim_span_steps > 0 and
+            summary.hot_path_memory_vm_reclaim_page_steps > 0 and
             summary.hot_path_bounded_block_device_scan_max >= summary.storage_device_count and
             summary.hot_path_bounded_block_device_scan_max <= 8 and
             summary.hot_path_bounded_tcp_connection_scan_max == summary.tcp_max_connections;
@@ -3650,6 +3838,330 @@ const App = struct {
         }
         const distribution = measurement.summarize(costs[0..self.stats.pci_inventory_sample_count]);
         self.sys.write("  PCI inventory distribution ns/inventory: n=");
+        self.sys.printU64(distribution.count);
+        self.sys.write(" min=");
+        self.sys.printU64(distribution.minimum);
+        self.sys.write(" p50=");
+        self.sys.printU64(distribution.p50);
+        self.sys.write(" p95=");
+        self.sys.printU64(distribution.p95);
+        self.sys.write(" p99=");
+        self.sys.printU64(distribution.p99);
+        self.sys.write(" max=");
+        self.sys.printU64(distribution.maximum);
+        self.sys.write(" mean=");
+        self.sys.printU64(distribution.mean);
+        self.sys.println("");
+    }
+
+    fn probeMemoryMetadata(self: *App) bool {
+        if (!self.monotonic_clock_available or
+            !self.sys.hasFn("vm_reserve") or
+            !self.sys.hasFn("vm_commit") or
+            !self.sys.hasFn("vm_release") or
+            !self.dev.hasFn("performance_summary") or
+            !self.dev.hasFn("memory_backing_store_probe") or
+            !self.dev.hasFn("memory_backing_store_slot_probe") or
+            !self.dev.hasFn("memory_vm_page_state_probe") or
+            !self.dev.hasFn("memory_reclaim_probe")) return self.memoryMetadataBenchmarkFailure("required-api");
+
+        if (!self.writeBackingStoreFile(memory_metadata_backing_store_path, memory_metadata_backing_store_bytes)) return self.memoryMetadataBenchmarkFailure("backing-write");
+        const backing = self.dev.memoryBackingStoreProbe(memory_metadata_backing_store_path, memory_metadata_backing_store_bytes, 0) orelse return self.memoryMetadataBenchmarkFailure("backing-probe");
+        if (backing.version != r4os.abi.memory_backing_store_probe_version or
+            backing.size < @sizeOf(r4os.abi.ProgramMemoryBackingStoreProbe) or
+            backing.status != r4os.abi.memory_backing_store_status_ready or
+            backing.blockers != 0 or
+            !backingStoreReadyFlagsOk(backing.flags) or
+            backing.available_bytes < memory_metadata_backing_store_bytes) return self.memoryMetadataBenchmarkFailure("backing-contract");
+        const slots = self.dev.memoryBackingStoreSlotProbe(
+            memory_metadata_backing_store_path,
+            memory_metadata_backing_store_bytes,
+            r4os.abi.memory_backing_store_slot_operation_probe,
+            0,
+            0,
+            r4os.abi.memory_backing_store_slot_owner_kind_diagnostic,
+            backing_store_slot_owner,
+            0,
+            0,
+        ) orelse return self.memoryMetadataBenchmarkFailure("backing-slots-probe");
+        if (slots.status != r4os.abi.memory_backing_store_slot_status_ready or
+            slots.blockers != 0 or
+            slots.capacity_slots < measurement.memory_metadata_pages_per_sample or
+            slots.reserved_slots != 0)
+        {
+            return self.memoryMetadataBenchmarkFailure("backing-slots-contract");
+        }
+
+        self.stats.memory_metadata_sample_count = 0;
+        var benchmark_ok = true;
+        var repetition: u8 = 0;
+        while (repetition < self.config.repetitions) : (repetition += 1) {
+            const sample = self.probeMemoryMetadataSample(repetition + 1) orelse return false;
+            self.stats.memory_metadata_samples[self.stats.memory_metadata_sample_count] = sample;
+            self.stats.memory_metadata_sample_count += 1;
+            benchmark_ok = memoryMetadataSampleOk(sample) and benchmark_ok;
+        }
+        return benchmark_ok and self.stats.memory_metadata_sample_count == self.config.repetitions;
+    }
+
+    fn probeMemoryMetadataSample(self: *App, repetition: u8) ?MemoryMetadataSample {
+        const pages = measurement.memory_metadata_pages_per_sample;
+        const bytes = pages * 4096;
+        const before = self.captureSummary() orelse return self.memoryMetadataSampleFailure(repetition, "summary-before");
+        if (!memoryMetadataSummaryContractOk(before)) return self.memoryMetadataSampleFailure(repetition, "summary-before-contract");
+
+        var reserve_start: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&reserve_start)) return self.memoryMetadataSampleFailure(repetition, "reserve-clock-start");
+        const region = self.sys.vmReserve(bytes, 4096, r4os.abi.vm_region_flags_default) orelse return self.memoryMetadataSampleFailure(repetition, "reserve");
+        var release_needed = true;
+        defer {
+            if (release_needed) _ = self.sys.vmRelease(region.id);
+        }
+        if (self.sys.vmCommit(region.id, 0, bytes) != r4os.abi.vm_ok) return self.memoryMetadataSampleFailure(repetition, "commit");
+        var reserve_end: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&reserve_end) or !sameClockInterval(reserve_start, reserve_end)) return self.memoryMetadataSampleFailure(repetition, "reserve-clock-end");
+
+        var fault_start: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&fault_start)) return self.memoryMetadataSampleFailure(repetition, "fault-clock-start");
+        const ptr: [*]volatile u8 = @ptrFromInt(region.base);
+        var page_index: u64 = 0;
+        while (page_index < pages) : (page_index += 1) {
+            ptr[page_index * 4096] = @truncate(@as(u64, repetition) *% 29 +% page_index *% 17 +% 0x41);
+        }
+        var fault_end: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&fault_end) or !sameClockInterval(fault_start, fault_end)) return self.memoryMetadataSampleFailure(repetition, "fault-clock-end");
+
+        var state_start: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&state_start)) return self.memoryMetadataSampleFailure(repetition, "page-state-clock-start");
+        const clean_state = self.dev.memoryVmPageStateProbe(
+            region.id,
+            0,
+            pages,
+            r4os.abi.memory_vm_page_state_operation_mark_clean,
+            0,
+            0,
+            0,
+            0,
+        ) orelse return self.memoryMetadataSampleFailure(repetition, "page-state-probe");
+        var state_end: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&state_end) or !sameClockInterval(state_start, state_end)) return self.memoryMetadataSampleFailure(repetition, "page-state-clock-end");
+        if (clean_state.status != r4os.abi.memory_vm_page_state_status_ready or
+            clean_state.committed_pages != pages or clean_state.resident_pages != pages or
+            clean_state.clean_pages != pages or clean_state.dirty_pages != 0)
+        {
+            self.printMemoryMetadataPageStateFailure("page-state-clean", clean_state);
+            return self.memoryMetadataSampleFailure(repetition, "page-state-clean");
+        }
+
+        const frame_bytes: u64 = if (before.fs_cache_payload_frame_bytes == 0) 4096 else before.fs_cache_payload_frame_bytes;
+        var remaining_fs_frames = before.fs_cache_pmm_reclaimable_bytes / frame_bytes;
+        var requested_frames: u32 = @intCast(@min(remaining_fs_frames + pages, @as(u64, 1024)));
+        if (requested_frames == 0) requested_frames = 1;
+
+        var reclaim_start: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&reclaim_start)) return self.memoryMetadataSampleFailure(repetition, "reclaim-clock-start");
+        var reclaim_attempts: u32 = 0;
+        var reclaim_requested_frames: u64 = 0;
+        var reclaim_returned_frames: u64 = 0;
+        var reclaim_fs_returned_frames: u64 = 0;
+        var reclaim_vm_returned_frames: u64 = 0;
+        var reclaim_vm_page_outs: u64 = 0;
+        var reclaim_vm_failures: u64 = 0;
+        while (reclaim_attempts < measurement.memory_metadata_reclaim_max_attempts and
+            reclaim_vm_returned_frames < pages) : (reclaim_attempts += 1)
+        {
+            const current = self.dev.memoryReclaimProbe(requested_frames) orelse return self.memoryMetadataSampleFailure(repetition, "reclaim-probe");
+            reclaim_requested_frames +%= current.requested_frames;
+            reclaim_returned_frames +%= current.returned_frames;
+            reclaim_fs_returned_frames +%= current.fs_returned_frames;
+            reclaim_vm_returned_frames +%= current.vm_returned_frames;
+            reclaim_vm_page_outs +%= current.vm_page_outs;
+            reclaim_vm_failures +%= current.vm_failures;
+
+            const returned_fs_frames: u64 = current.fs_returned_frames;
+            remaining_fs_frames = if (returned_fs_frames >= remaining_fs_frames)
+                0
+            else
+                remaining_fs_frames - returned_fs_frames;
+            const missing_vm_frames = pages -| reclaim_vm_returned_frames;
+            requested_frames = @intCast(@min(remaining_fs_frames + @max(missing_vm_frames, 1), @as(u64, 1024)));
+            if (requested_frames == 0) requested_frames = 1;
+        }
+        const attempts_made = reclaim_attempts;
+        var reclaim_end: r4os.abi.MonotonicClockInfo = .{};
+        if (!self.queryMonotonicClock(&reclaim_end) or !sameClockInterval(reclaim_start, reclaim_end)) return self.memoryMetadataSampleFailure(repetition, "reclaim-clock-end");
+
+        const final_state = self.dev.memoryVmPageStateProbe(
+            region.id,
+            0,
+            pages,
+            r4os.abi.memory_vm_page_state_operation_query,
+            0,
+            0,
+            0,
+            0,
+        ) orelse return self.memoryMetadataSampleFailure(repetition, "page-state-final-probe");
+        if (final_state.status != r4os.abi.memory_vm_page_state_status_ready) {
+            self.printMemoryMetadataPageStateFailure("page-state-final", final_state);
+            return self.memoryMetadataSampleFailure(repetition, "page-state-final");
+        }
+        const after = self.captureSummary() orelse return self.memoryMetadataSampleFailure(repetition, "summary-after");
+        if (!memoryMetadataSummaryContractOk(after)) return self.memoryMetadataSampleFailure(repetition, "summary-after-contract");
+
+        const reserve_commit_elapsed_ns = reserve_end.instant_ns - reserve_start.instant_ns;
+        const fault_elapsed_ns = fault_end.instant_ns - fault_start.instant_ns;
+        const page_state_elapsed_ns = state_end.instant_ns - state_start.instant_ns;
+        const reclaim_elapsed_ns = reclaim_end.instant_ns - reclaim_start.instant_ns;
+        const sample = MemoryMetadataSample{
+            .repetition = repetition,
+            .pages = pages,
+            .reserve_commit_elapsed_ns = reserve_commit_elapsed_ns,
+            .reserve_commit_ns_per_page = perUnitCost(reserve_commit_elapsed_ns, pages),
+            .fault_elapsed_ns = fault_elapsed_ns,
+            .fault_ns_per_page = perUnitCost(fault_elapsed_ns, pages),
+            .page_state_elapsed_ns = page_state_elapsed_ns,
+            .page_state_ns_per_page = perUnitCost(page_state_elapsed_ns, pages),
+            .reclaim_elapsed_ns = reclaim_elapsed_ns,
+            .reclaim_ns_per_vm_frame = perUnitCost(reclaim_elapsed_ns, reclaim_vm_returned_frames),
+            .reclaim_attempts = attempts_made,
+            .reclaim_requested_frames = reclaim_requested_frames,
+            .reclaim_returned_frames = reclaim_returned_frames,
+            .reclaim_fs_returned_frames = reclaim_fs_returned_frames,
+            .reclaim_vm_returned_frames = reclaim_vm_returned_frames,
+            .reclaim_vm_page_outs = reclaim_vm_page_outs,
+            .reclaim_vm_failures = reclaim_vm_failures,
+            .target_committed_pages = final_state.committed_pages,
+            .target_resident_pages = final_state.resident_pages,
+            .target_nonresident_pages = final_state.nonresident_pages,
+            .target_clean_pages = final_state.clean_pages,
+            .target_slot_bound_pages = final_state.slot_bound_pages,
+            .block_physical_index_entries = after.hot_path_memory_block_physical_index_entries,
+            .block_physical_step_max = after.hot_path_memory_block_physical_step_max,
+            .block_id_index_entries = after.hot_path_memory_block_id_index_entries,
+            .block_id_step_max = after.hot_path_memory_block_id_step_max,
+            .block_free_slot_word_step_max = after.hot_path_memory_block_free_slot_word_step_max,
+            .range_address_entries = after.hot_path_memory_vm_range_address_entries,
+            .range_address_probe_max = after.hot_path_memory_vm_range_address_probe_max,
+            .commit_span_active = after.hot_path_memory_vm_commit_span_active,
+            .commit_span_step_max = after.hot_path_memory_vm_commit_span_step_max,
+            .page_state_span_active = after.hot_path_memory_vm_page_state_span_active,
+            .page_state_span_step_max = after.hot_path_memory_vm_page_state_span_step_max,
+            .block_physical_lookups = counterDelta(before.hot_path_memory_block_physical_lookups, after.hot_path_memory_block_physical_lookups),
+            .block_physical_steps = counterDelta(before.hot_path_memory_block_physical_steps, after.hot_path_memory_block_physical_steps),
+            .block_physical_mutations = counterDelta(before.hot_path_memory_block_physical_mutations, after.hot_path_memory_block_physical_mutations),
+            .block_physical_rebuilds = counterDelta(before.hot_path_memory_block_physical_rebuilds, after.hot_path_memory_block_physical_rebuilds),
+            .block_id_lookups = counterDelta(before.hot_path_memory_block_id_lookups, after.hot_path_memory_block_id_lookups),
+            .block_id_steps = counterDelta(before.hot_path_memory_block_id_steps, after.hot_path_memory_block_id_steps),
+            .block_free_slot_lookups = counterDelta(before.hot_path_memory_block_free_slot_lookups, after.hot_path_memory_block_free_slot_lookups),
+            .block_free_slot_word_steps = counterDelta(before.hot_path_memory_block_free_slot_word_steps, after.hot_path_memory_block_free_slot_word_steps),
+            .block_claim_transactions = counterDelta(before.hot_path_memory_block_claim_transactions, after.hot_path_memory_block_claim_transactions),
+            .block_claim_rollbacks = counterDelta(before.hot_path_memory_block_claim_rollbacks, after.hot_path_memory_block_claim_rollbacks),
+            .range_address_lookups = counterDelta(before.hot_path_memory_vm_range_address_lookups, after.hot_path_memory_vm_range_address_lookups),
+            .range_address_probes = counterDelta(before.hot_path_memory_vm_range_address_probe_total, after.hot_path_memory_vm_range_address_probe_total),
+            .commit_span_lookups = counterDelta(before.hot_path_memory_vm_commit_span_lookups, after.hot_path_memory_vm_commit_span_lookups),
+            .commit_span_steps = counterDelta(before.hot_path_memory_vm_commit_span_steps, after.hot_path_memory_vm_commit_span_steps),
+            .page_state_span_lookups = counterDelta(before.hot_path_memory_vm_page_state_span_lookups, after.hot_path_memory_vm_page_state_span_lookups),
+            .page_state_span_steps = counterDelta(before.hot_path_memory_vm_page_state_span_steps, after.hot_path_memory_vm_page_state_span_steps),
+            .reclaim_range_steps = counterDelta(before.hot_path_memory_vm_reclaim_range_steps, after.hot_path_memory_vm_reclaim_range_steps),
+            .reclaim_span_steps = counterDelta(before.hot_path_memory_vm_reclaim_span_steps, after.hot_path_memory_vm_reclaim_span_steps),
+            .reclaim_page_steps = counterDelta(before.hot_path_memory_vm_reclaim_page_steps, after.hot_path_memory_vm_reclaim_page_steps),
+            .reclaim_wraps = counterDelta(before.hot_path_memory_vm_reclaim_wraps, after.hot_path_memory_vm_reclaim_wraps),
+        };
+        if (self.sys.vmRelease(region.id) != r4os.abi.vm_ok) return self.memoryMetadataSampleFailure(repetition, "release");
+        release_needed = false;
+        return sample;
+    }
+
+    fn memoryMetadataBenchmarkFailure(self: *App, stage: []const u8) bool {
+        self.sys.write("  Memory metadata benchmark failure: stage=");
+        self.sys.println(stage);
+        return false;
+    }
+
+    fn memoryMetadataSampleFailure(self: *App, repetition: u8, stage: []const u8) ?MemoryMetadataSample {
+        self.sys.write("  Memory metadata sample failure: repetition=");
+        self.sys.printU64(repetition);
+        self.sys.write(" stage=");
+        self.sys.println(stage);
+        return null;
+    }
+
+    fn printMemoryMetadataPageStateFailure(self: *App, stage: []const u8, state: r4os.abi.ProgramMemoryVmPageStateProbe) void {
+        self.sys.write("  Memory metadata page-state failure: stage=");
+        self.sys.write(stage);
+        self.sys.write(" status=");
+        self.sys.printU64(state.status);
+        self.sys.write(" blockers=");
+        self.sys.printU64(state.blockers);
+        self.sys.write(" committed=");
+        self.sys.printU64(state.committed_pages);
+        self.sys.write(" resident=");
+        self.sys.printU64(state.resident_pages);
+        self.sys.write(" clean=");
+        self.sys.printU64(state.clean_pages);
+        self.sys.write(" dirty=");
+        self.sys.printU64(state.dirty_pages);
+        self.sys.write(" spans=");
+        self.sys.printU64(state.span_count);
+        self.sys.println("");
+    }
+
+    fn printMemoryMetadataResults(self: *App) void {
+        if (self.stats.memory_metadata_sample_count == 0) return;
+        var reserve_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var fault_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var state_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var reclaim_costs: [measurement.max_repetitions]u64 = .{0} ** measurement.max_repetitions;
+        var index: usize = 0;
+        while (index < self.stats.memory_metadata_sample_count) : (index += 1) {
+            const sample = self.stats.memory_metadata_samples[index];
+            reserve_costs[index] = sample.reserve_commit_ns_per_page;
+            fault_costs[index] = sample.fault_ns_per_page;
+            state_costs[index] = sample.page_state_ns_per_page;
+            reclaim_costs[index] = sample.reclaim_ns_per_vm_frame;
+            self.sys.write("  Memory metadata sample=");
+            self.sys.printU64(sample.repetition);
+            self.sys.write(" ns/page(reserve+commit/fault/state)=");
+            self.sys.printU64(sample.reserve_commit_ns_per_page);
+            self.sys.write("/");
+            self.sys.printU64(sample.fault_ns_per_page);
+            self.sys.write("/");
+            self.sys.printU64(sample.page_state_ns_per_page);
+            self.sys.write(" reclaimNs/frame=");
+            self.sys.printU64(sample.reclaim_ns_per_vm_frame);
+            self.sys.write(" vmFrames/pageOut=");
+            self.sys.printU64(sample.reclaim_vm_returned_frames);
+            self.sys.write("/");
+            self.sys.printU64(sample.reclaim_vm_page_outs);
+            self.sys.write(" indexMax(block/range/commit/state)=");
+            self.sys.printU64(sample.block_physical_step_max);
+            self.sys.write("/");
+            self.sys.printU64(sample.range_address_probe_max);
+            self.sys.write("/");
+            self.sys.printU64(sample.commit_span_step_max);
+            self.sys.write("/");
+            self.sys.printU64(sample.page_state_span_step_max);
+            self.sys.write(" reclaimSteps(range/span/page)=");
+            self.sys.printU64(sample.reclaim_range_steps);
+            self.sys.write("/");
+            self.sys.printU64(sample.reclaim_span_steps);
+            self.sys.write("/");
+            self.sys.printU64(sample.reclaim_page_steps);
+            self.sys.println("");
+        }
+        self.printMemoryMetadataHumanDistribution("reserve+commit", reserve_costs[0..self.stats.memory_metadata_sample_count], "ns/page");
+        self.printMemoryMetadataHumanDistribution("fault", fault_costs[0..self.stats.memory_metadata_sample_count], "ns/page");
+        self.printMemoryMetadataHumanDistribution("page-state", state_costs[0..self.stats.memory_metadata_sample_count], "ns/page");
+        self.printMemoryMetadataHumanDistribution("reclaim", reclaim_costs[0..self.stats.memory_metadata_sample_count], "ns/frame");
+    }
+
+    fn printMemoryMetadataHumanDistribution(self: *App, metric: []const u8, values: []const u64, unit: []const u8) void {
+        const distribution = measurement.summarize(values);
+        self.sys.write("  Memory metadata ");
+        self.sys.write(metric);
+        self.sys.write(" distribution ");
+        self.sys.write(unit);
+        self.sys.write(": n=");
         self.sys.printU64(distribution.count);
         self.sys.write(" min=");
         self.sys.printU64(distribution.minimum);
@@ -6517,6 +7029,62 @@ fn delta(after: u64, before: u64) u64 {
 
 fn counterDelta(before: u64, after: u64) u64 {
     return after -% before;
+}
+
+fn sameClockInterval(start: r4os.abi.MonotonicClockInfo, end: r4os.abi.MonotonicClockInfo) bool {
+    return start.generation != 0 and end.generation == start.generation and end.instant_ns > start.instant_ns;
+}
+
+fn perUnitCost(elapsed_ns: u64, units: u64) u64 {
+    if (elapsed_ns == 0 or units == 0) return 0;
+    return (elapsed_ns +| (units - 1)) / units;
+}
+
+fn memoryMetadataSummaryContractOk(summary: r4os.abi.ProgramPerformanceSummary) bool {
+    const required_size = @offsetOf(r4os.abi.ProgramPerformanceSummary, "hot_path_memory_vm_reclaim_wraps") + @sizeOf(u64);
+    return summary.version >= 8 and summary.size >= required_size;
+}
+
+fn memoryMetadataSampleOk(sample: MemoryMetadataSample) bool {
+    // Global reclaim may legitimately select another eligible R4X range at
+    // its persistent cursor. The target must remain internally consistent;
+    // the separate reclaim gate below proves the requested multi-frame work.
+    const target_accounting = sample.target_committed_pages == sample.pages and
+        sample.target_resident_pages + sample.target_nonresident_pages == sample.pages and
+        sample.target_slot_bound_pages == sample.target_nonresident_pages;
+    const block_index_ok = sample.block_physical_index_entries > 0 and
+        sample.block_physical_step_max > 0 and sample.block_physical_step_max <= 32 and
+        sample.block_id_index_entries > 0 and
+        sample.block_id_step_max > 0 and sample.block_id_step_max <= 128 and
+        sample.block_free_slot_word_step_max > 0 and sample.block_free_slot_word_step_max <= 128 and
+        sample.block_physical_lookups > 0 and sample.block_physical_steps >= sample.block_physical_lookups and
+        sample.block_physical_mutations > 0 and sample.block_physical_rebuilds == 0 and
+        sample.block_id_lookups > 0 and sample.block_id_steps >= sample.block_id_lookups and
+        sample.block_free_slot_lookups > 0 and sample.block_free_slot_word_steps >= sample.block_free_slot_lookups and
+        sample.block_claim_transactions >= sample.pages and sample.block_claim_rollbacks == 0;
+    const vm_index_ok = sample.range_address_entries > 0 and
+        sample.range_address_probe_max > 0 and sample.range_address_probe_max <= 16 and
+        sample.commit_span_active > 0 and sample.commit_span_step_max > 0 and sample.commit_span_step_max <= 64 and
+        sample.page_state_span_active > 0 and sample.page_state_span_step_max > 0 and sample.page_state_span_step_max <= 64 and
+        sample.range_address_lookups >= sample.pages and sample.range_address_probes >= sample.range_address_lookups and
+        sample.commit_span_lookups > 0 and sample.commit_span_steps > 0 and
+        sample.page_state_span_lookups > 0 and sample.page_state_span_steps > 0;
+    const reclaim_range_bound = sample.reclaim_vm_returned_frames +
+        @as(u64, sample.range_address_entries) * @as(u64, sample.reclaim_attempts) + sample.pages;
+    const reclaim_ok = sample.reclaim_attempts > 0 and
+        sample.reclaim_attempts <= measurement.memory_metadata_reclaim_max_attempts and
+        sample.reclaim_vm_returned_frames >= sample.pages and
+        sample.reclaim_vm_page_outs >= sample.pages and
+        sample.reclaim_vm_failures == 0 and
+        sample.reclaim_returned_frames >= sample.reclaim_vm_returned_frames + sample.reclaim_fs_returned_frames and
+        sample.reclaim_range_steps > 0 and sample.reclaim_range_steps <= reclaim_range_bound and
+        sample.reclaim_span_steps > 0 and sample.reclaim_page_steps >= sample.reclaim_vm_returned_frames;
+    return sample.pages == measurement.memory_metadata_pages_per_sample and
+        sample.reserve_commit_elapsed_ns > 0 and sample.reserve_commit_ns_per_page > 0 and
+        sample.fault_elapsed_ns > 0 and sample.fault_ns_per_page > 0 and
+        sample.page_state_elapsed_ns > 0 and sample.page_state_ns_per_page > 0 and
+        sample.reclaim_elapsed_ns > 0 and sample.reclaim_ns_per_vm_frame > 0 and
+        target_accounting and block_index_ok and vm_index_ok and reclaim_ok;
 }
 
 fn pciInventorySnapshotContractOk(info: r4os.abi.ProgramPciInventoryPerformanceInfo) bool {

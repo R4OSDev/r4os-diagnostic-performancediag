@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const result_schema = "r4os.perfdiag.ndjson";
-pub const result_schema_version: u32 = 6;
+pub const result_schema_version: u32 = 7;
 pub const default_repetitions: u8 = 5;
 pub const min_repetitions: u8 = 3;
 pub const max_repetitions: u8 = 20;
@@ -26,6 +26,8 @@ pub const driver_work_audio_writes_per_sample: u64 = 8;
 pub const driver_work_audio_bytes_per_write: usize = 4096;
 pub const driver_work_audio_write_spacing_ms: u64 = 25;
 pub const pci_inventory_iterations_per_sample: u64 = 100;
+pub const memory_metadata_pages_per_sample: u64 = 8;
+pub const memory_metadata_reclaim_max_attempts: u32 = 16;
 pub const bytes_per_kb: u64 = 1024;
 pub const kb_per_mb: u64 = 1024;
 pub const bytes_per_mb: u64 = bytes_per_kb * kb_per_mb;
@@ -65,6 +67,7 @@ pub const BenchmarkKind = enum {
     kernel_ipc,
     driver_work,
     pci_inventory,
+    memory_metadata,
 
     pub fn name(self: BenchmarkKind) []const u8 {
         return switch (self) {
@@ -74,6 +77,7 @@ pub const BenchmarkKind = enum {
             .kernel_ipc => "kernel-ipc",
             .driver_work => "driver-work",
             .pci_inventory => "pci-inventory",
+            .memory_metadata => "memory-metadata",
         };
     }
 };
@@ -167,6 +171,9 @@ pub fn parseArgs(args: []const u8) Config {
         } else if (equalsIgnoreCase(token, "/PCI-INVENTORY")) {
             selectMode(&config, .benchmark);
             selectBenchmark(&config, .pci_inventory);
+        } else if (equalsIgnoreCase(token, "/MEMORY-METADATA")) {
+            selectMode(&config, .benchmark);
+            selectBenchmark(&config, .memory_metadata);
         } else if (equalsIgnoreCase(token, "/COLD")) {
             selectCacheState(&config, .cold);
         } else if (equalsIgnoreCase(token, "/WARM")) {
@@ -357,6 +364,15 @@ test "arguments select the PCI inventory benchmark" {
     try std.testing.expect(config.valid());
     try std.testing.expectEqual(Mode.benchmark, config.mode);
     try std.testing.expectEqual(BenchmarkKind.pci_inventory, config.benchmark_kind);
+    try std.testing.expectEqual(@as(u8, 5), config.repetitions);
+    try std.testing.expectEqual(CacheState.warm, config.cache_state);
+}
+
+test "arguments select the memory metadata benchmark" {
+    const config = parseArgs("/benchmark /memory-metadata /repeat=5 /warm");
+    try std.testing.expect(config.valid());
+    try std.testing.expectEqual(Mode.benchmark, config.mode);
+    try std.testing.expectEqual(BenchmarkKind.memory_metadata, config.benchmark_kind);
     try std.testing.expectEqual(@as(u8, 5), config.repetitions);
     try std.testing.expectEqual(CacheState.warm, config.cache_state);
 }
