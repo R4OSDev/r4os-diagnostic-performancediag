@@ -71,6 +71,8 @@ fachliche Subsystemwerte:
 - kanonische PCI-Inventur, Kapazitaetsrechnung und ECAM-Apertur
 - laufwerkslokale FS-Gates, controllerlokale Blockworker und residenten
   Direktpufferbetrieb ohne Bounce-Allokation oder -Kopie
+- Mehrsektorwrites sowie operationslokale Pagecache-Commits mit getrennten
+  Zaehlern fuer entladene und bewusst zurueckgehaltene fremde Dirty-Sektoren
 
 Als Abnahmezaun dienen stabile ABI-, Kapazitaets-, Fehler- und
 Konsistenzinvarianten. Historische Exaktzustands-Aggregate bleiben als
@@ -96,4 +98,5 @@ ausgefuehrt. Benoetigte optionale Felder werden weiterhin mit hasFn geprueft;
 ein aelterer Kernel bleibt ueber den bisherigen TimeState-Fallback lesbar.
 Der zusaetzliche `storage_dispatch`-Datensatz stellt vor/nach der Arbeitslast
 Controller- und Workerzahl, Parallelitaetsmaximum, Direkt- und Bounce-Deltas,
-Timeouts sowie Completion- und FS-Tail in Ticks gegenueber.
+Mehrsektorwrites, selektiven Writeback, zurueckgehaltene fremde Dirty-
+Sektoren, Timeouts sowie Completion- und FS-Tail in Ticks gegenueber.

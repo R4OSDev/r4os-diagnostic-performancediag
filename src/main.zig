@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.12";
+const module_version = "0.3.13";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -870,6 +870,16 @@ const App = struct {
         self.sys.printU64(delta(post_summary.storage_direct_timeout_waits, passive_summary.storage_direct_timeout_waits));
         self.sys.write(",\"completion_timeout_delta\":");
         self.sys.printU64(delta(post_summary.storage_completion_timeouts, passive_summary.storage_completion_timeouts));
+        self.sys.write(",\"fs_bulk_write_request_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_bulk_write_requests, passive_summary.fs_cache_bulk_write_requests));
+        self.sys.write(",\"fs_bulk_write_sector_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_bulk_write_sectors, passive_summary.fs_cache_bulk_write_sectors));
+        self.sys.write(",\"fs_selective_flush_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_selective_flushes, passive_summary.fs_cache_selective_flushes));
+        self.sys.write(",\"fs_selective_writeback_sector_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_selective_writeback_sectors, passive_summary.fs_cache_selective_writeback_sectors));
+        self.sys.write(",\"fs_foreign_dirty_sector_skip_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_selective_foreign_dirty_sectors_skipped, passive_summary.fs_cache_selective_foreign_dirty_sectors_skipped));
         self.sys.write(",\"completion_tail_ticks\":");
         self.sys.printU64(post_summary.storage_completion_max_ticks);
         self.sys.write(",\"fs_tail_ticks\":");
@@ -1850,7 +1860,10 @@ const App = struct {
             summary.storage_bounce_allocations == 0 and
             summary.storage_bounce_bytes == 0 and
             summary.storage_bounce_copy_bytes == 0 and
-            summary.storage_direct_timeout_waits == 0;
+            summary.storage_direct_timeout_waits == 0 and
+            summary.fs_cache_bulk_write_requests <= summary.fs_cache_bulk_write_sectors / 2 and
+            summary.fs_cache_selective_flushes <= summary.fs_cache_flushes and
+            summary.fs_cache_selective_writeback_sectors <= summary.fs_cache_writeback_sectors;
         const legacy_snapshot_ok = summary.version == r4os.abi.performance_snapshot_version and
             summary.size >= @sizeOf(r4os.abi.ProgramPerformanceSummary) and
             summary.tick_hz > 0 and
@@ -4927,6 +4940,16 @@ const App = struct {
         self.sys.printU64(summary.fs_cache_writeback_max_ticks);
         self.sys.write(" wbErr=");
         self.sys.printU64(summary.fs_cache_writeback_errors);
+        self.sys.write(" bulk=");
+        self.sys.printU64(summary.fs_cache_bulk_write_requests);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_bulk_write_sectors);
+        self.sys.write(" selective=");
+        self.sys.printU64(summary.fs_cache_selective_flushes);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_selective_writeback_sectors);
+        self.sys.write(" foreignSkip=");
+        self.sys.printU64(summary.fs_cache_selective_foreign_dirty_sectors_skipped);
         self.sys.write(" reclaimClean=");
         self.sys.printU64(summary.fs_cache_clean_reclaimable_bytes);
         self.sys.write(" reclaimDirty=");
