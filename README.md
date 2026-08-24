@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.14`
+- Version: `0.3.15`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -72,8 +72,10 @@ scans remain visible beside latency distributions. Every successful run ends
 with a delimited, versioned NDJSON v7
 result block containing clock source and quality, the event backend and exact
 rate, run metadata, raw samples, distributions, checks, missing measurement
-flags, measured summary-query overhead, and a storage-dispatch record. That
-record preserves controller/worker parallelism, direct-versus-bounce deltas,
+flags, measured summary-query overhead, a storage-dispatch record, and fixed
+NTFS metadata-cache budgets with hit, invalidation, and reclaim deltas. The
+storage-dispatch record preserves controller/worker parallelism,
+direct-versus-bounce deltas,
 multi-sector writes, selective writeback and retained foreign dirty sectors,
 completion timeouts, and filesystem/block tail ticks outside the timed loop.
 

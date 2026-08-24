@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.14";
+const module_version = "0.3.15";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -921,6 +921,95 @@ const App = struct {
         self.sys.printU64(delta(post_summary.fs_cache_read_ahead_issued, passive_summary.fs_cache_read_ahead_issued));
         self.sys.write(",\"read_ahead_hit_delta\":");
         self.sys.printU64(delta(post_summary.fs_cache_read_ahead_hits, passive_summary.fs_cache_read_ahead_hits));
+        self.sys.println("}");
+
+        self.machineLinePrefix("ntfs_metadata_cache");
+        self.sys.write(",\"version\":");
+        self.sys.printU64(post_summary.ntfs_metadata_cache_version);
+        self.sys.write(",\"active_volumes\":");
+        self.sys.printU64(post_summary.ntfs_metadata_cache_active_volumes);
+        self.sys.write(",\"bytes_per_volume\":");
+        self.sys.printU64(post_summary.ntfs_metadata_cache_bytes_per_volume);
+        self.sys.write(",\"slot_capacity\":");
+        self.sys.printU64(post_summary.ntfs_metadata_cache_slot_capacity);
+        self.sys.write(",\"record_capacity\":");
+        self.sys.printU64(post_summary.ntfs_metadata_record_capacity);
+        self.sys.write(",\"attribute_capacity\":");
+        self.sys.printU64(post_summary.ntfs_metadata_attribute_capacity);
+        self.sys.write(",\"index_capacity\":");
+        self.sys.printU64(post_summary.ntfs_metadata_index_capacity);
+        self.sys.write(",\"path_capacity\":");
+        self.sys.printU64(post_summary.ntfs_metadata_path_capacity);
+        self.sys.write(",\"record_entries\":");
+        self.sys.printU64(post_summary.ntfs_metadata_record_entries);
+        self.sys.write(",\"attribute_entries\":");
+        self.sys.printU64(post_summary.ntfs_metadata_attribute_entries);
+        self.sys.write(",\"index_entries\":");
+        self.sys.printU64(post_summary.ntfs_metadata_index_entries);
+        self.sys.write(",\"path_entries\":");
+        self.sys.printU64(post_summary.ntfs_metadata_path_entries);
+        self.sys.write(",\"mount_generation\":");
+        self.sys.printU64(post_summary.ntfs_metadata_mount_generation);
+        self.sys.write(",\"content_generation\":");
+        self.sys.printU64(post_summary.ntfs_metadata_content_generation);
+        self.sys.write(",\"negative_ttl_ticks\":");
+        self.sys.printU64(post_summary.ntfs_metadata_negative_ttl_ticks);
+        self.sys.write(",\"record_hit_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_record_hits, passive_summary.ntfs_metadata_record_hits));
+        self.sys.write(",\"record_miss_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_record_misses, passive_summary.ntfs_metadata_record_misses));
+        self.sys.write(",\"record_store_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_record_stores, passive_summary.ntfs_metadata_record_stores));
+        self.sys.write(",\"record_eviction_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_record_evictions, passive_summary.ntfs_metadata_record_evictions));
+        self.sys.write(",\"attribute_hit_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_attribute_hits, passive_summary.ntfs_metadata_attribute_hits));
+        self.sys.write(",\"attribute_miss_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_attribute_misses, passive_summary.ntfs_metadata_attribute_misses));
+        self.sys.write(",\"attribute_store_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_attribute_stores, passive_summary.ntfs_metadata_attribute_stores));
+        self.sys.write(",\"attribute_eviction_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_attribute_evictions, passive_summary.ntfs_metadata_attribute_evictions));
+        self.sys.write(",\"index_hit_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_index_hits, passive_summary.ntfs_metadata_index_hits));
+        self.sys.write(",\"index_miss_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_index_misses, passive_summary.ntfs_metadata_index_misses));
+        self.sys.write(",\"index_store_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_index_stores, passive_summary.ntfs_metadata_index_stores));
+        self.sys.write(",\"index_eviction_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_index_evictions, passive_summary.ntfs_metadata_index_evictions));
+        self.sys.write(",\"path_query_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_path_queries, passive_summary.ntfs_metadata_path_queries));
+        self.sys.write(",\"path_positive_hit_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_path_positive_hits, passive_summary.ntfs_metadata_path_positive_hits));
+        self.sys.write(",\"path_negative_hit_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_path_negative_hits, passive_summary.ntfs_metadata_path_negative_hits));
+        self.sys.write(",\"path_miss_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_path_misses, passive_summary.ntfs_metadata_path_misses));
+        self.sys.write(",\"path_positive_store_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_path_positive_stores, passive_summary.ntfs_metadata_path_positive_stores));
+        self.sys.write(",\"path_negative_store_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_path_negative_stores, passive_summary.ntfs_metadata_path_negative_stores));
+        self.sys.write(",\"path_expiration_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_path_expirations, passive_summary.ntfs_metadata_path_expirations));
+        self.sys.write(",\"lookup_tree_walk_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_lookup_tree_walks, passive_summary.ntfs_metadata_lookup_tree_walks));
+        self.sys.write(",\"recovery_bypass_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_recovery_cache_bypasses, passive_summary.ntfs_metadata_recovery_cache_bypasses));
+        self.sys.write(",\"mount_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_mount_invalidations, passive_summary.ntfs_metadata_mount_invalidations));
+        self.sys.write(",\"mutation_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_mutation_invalidations, passive_summary.ntfs_metadata_mutation_invalidations));
+        self.sys.write(",\"external_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_external_invalidations, passive_summary.ntfs_metadata_external_invalidations));
+        self.sys.write(",\"invalidated_entry_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_invalidated_entries, passive_summary.ntfs_metadata_invalidated_entries));
+        self.sys.write(",\"reclaim_request_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_reclaim_requests, passive_summary.ntfs_metadata_reclaim_requests));
+        self.sys.write(",\"reclaim_scan_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_reclaim_scans, passive_summary.ntfs_metadata_reclaim_scans));
+        self.sys.write(",\"reclaimed_entry_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_reclaimed_entries, passive_summary.ntfs_metadata_reclaimed_entries));
         self.sys.println("}");
 
         var check_index: usize = 0;
@@ -1916,6 +2005,39 @@ const App = struct {
             summary.fs_cache_policy_background_errors == 0 and
             summary.fs_cache_policy_full_scan_fallbacks == 0 and
             summary.fs_cache_read_ahead_hits <= summary.fs_cache_read_ahead_issued;
+        const ntfs_active_volumes: u64 = summary.ntfs_metadata_cache_active_volumes;
+        const ntfs_capacity_sum = summary.ntfs_metadata_record_capacity +
+            summary.ntfs_metadata_attribute_capacity +
+            summary.ntfs_metadata_index_capacity +
+            summary.ntfs_metadata_path_capacity;
+        const ntfs_metadata_cache_ok = summary.ntfs_metadata_cache_version == 1 and
+            summary.ntfs_metadata_cache_active_volumes > 0 and
+            summary.ntfs_metadata_cache_bytes_per_volume > 0 and
+            summary.ntfs_metadata_cache_slot_capacity == 22 and
+            summary.ntfs_metadata_cache_slot_capacity == ntfs_capacity_sum and
+            summary.ntfs_metadata_record_capacity == 8 and
+            summary.ntfs_metadata_attribute_capacity == 4 and
+            summary.ntfs_metadata_index_capacity == 2 and
+            summary.ntfs_metadata_path_capacity == 8 and
+            summary.ntfs_metadata_record_entries <= ntfs_active_volumes * summary.ntfs_metadata_record_capacity and
+            summary.ntfs_metadata_attribute_entries <= ntfs_active_volumes * summary.ntfs_metadata_attribute_capacity and
+            summary.ntfs_metadata_index_entries <= ntfs_active_volumes * summary.ntfs_metadata_index_capacity and
+            summary.ntfs_metadata_path_entries <= ntfs_active_volumes * summary.ntfs_metadata_path_capacity and
+            summary.ntfs_metadata_mount_generation > 0 and
+            summary.ntfs_metadata_content_generation >= summary.ntfs_metadata_mount_generation and
+            summary.ntfs_metadata_negative_ttl_ticks > 0 and
+            summary.ntfs_metadata_path_queries == summary.ntfs_metadata_path_positive_hits +%
+                summary.ntfs_metadata_path_negative_hits +% summary.ntfs_metadata_path_misses and
+            summary.ntfs_metadata_path_positive_stores +% summary.ntfs_metadata_path_negative_stores <=
+                summary.ntfs_metadata_path_misses and
+            summary.ntfs_metadata_mount_invalidations >= summary.ntfs_metadata_cache_active_volumes and
+            summary.ntfs_metadata_mutation_invalidations > 0 and
+            summary.ntfs_metadata_invalidated_entries > 0 and
+            summary.ntfs_metadata_reclaim_requests > 0 and
+            summary.ntfs_metadata_reclaim_scans > 0 and
+            summary.ntfs_metadata_reclaim_scans <= summary.ntfs_metadata_reclaim_requests * 22 and
+            summary.ntfs_metadata_reclaimed_entries > 0 and
+            summary.ntfs_metadata_reclaimed_entries <= summary.ntfs_metadata_reclaim_scans;
         const legacy_snapshot_ok = summary.version == r4os.abi.performance_snapshot_version and
             summary.size >= @sizeOf(r4os.abi.ProgramPerformanceSummary) and
             summary.tick_hz > 0 and
@@ -2133,6 +2255,7 @@ const App = struct {
             summary.fs_cache_write_errors == 0 and
             summary.fs_cache_writeback_errors == 0 and
             cache_policy_ok and
+            ntfs_metadata_cache_ok and
             summary.storage_completion_timeouts == 0 and
             storage_dispatch_ok and
             summary.service_queue_used_total <= summary.service_queue_depth_total and
@@ -2156,6 +2279,7 @@ const App = struct {
         self.printCheck("Service endpoint lock/scan counters", service_lock_ok);
         self.printCheck("Parallel storage dispatch/direct buffers", storage_dispatch_ok);
         self.printCheck("FS page cache bounded policy", cache_policy_ok);
+        self.printCheck("NTFS metadata cache bounded generations", ntfs_metadata_cache_ok);
         self.printCheck("Performance summary contract", contract_ok);
         if (!legacy_snapshot_ok) {
             self.sys.println("  Legacy exact-state aggregate: OBSERVED (not a contract gate)");
@@ -5040,6 +5164,48 @@ const App = struct {
         self.sys.printU64(summary.fs_cache_pagefile_ready);
         self.sys.write(" pagefileBlockers=");
         self.sys.printU64(summary.fs_cache_pagefile_blockers);
+        self.sys.println("");
+
+        self.sys.write("  NTFS metadata cache: v=");
+        self.sys.printU64(summary.ntfs_metadata_cache_version);
+        self.sys.write(" volumes=");
+        self.sys.printU64(summary.ntfs_metadata_cache_active_volumes);
+        self.sys.write(" bytes/volume=");
+        self.sys.printU64(summary.ntfs_metadata_cache_bytes_per_volume);
+        self.sys.write(" entries(record/attr/index/path)=");
+        self.sys.printU64(summary.ntfs_metadata_record_entries);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_attribute_entries);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_index_entries);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_path_entries);
+        self.sys.write(" hits(record/attr/index/path+/path-)=");
+        self.sys.printU64(summary.ntfs_metadata_record_hits);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_attribute_hits);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_index_hits);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_path_positive_hits);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_path_negative_hits);
+        self.sys.write(" walks=");
+        self.sys.printU64(summary.ntfs_metadata_lookup_tree_walks);
+        self.sys.write(" invalidations=");
+        self.sys.printU64(summary.ntfs_metadata_mount_invalidations);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_mutation_invalidations);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_external_invalidations);
+        self.sys.write(" reclaim=");
+        self.sys.printU64(summary.ntfs_metadata_reclaim_scans);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_reclaimed_entries);
+        self.sys.write(" generation=");
+        self.sys.printU64(summary.ntfs_metadata_mount_generation);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_content_generation);
         self.sys.println("");
 
         self.sys.write("  Global reclaim: attempts=");

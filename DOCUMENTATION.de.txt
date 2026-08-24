@@ -77,6 +77,9 @@ fachliche Subsystemwerte:
   Arbeitsbudget, gestarteten Hintergrundowner, fehlerfreien autonomen
   Fortschritt, begrenzte Device-Probes und Read-ahead-Bilanzen ohne
   diagnostischen Vollscan-Fallback
+- NTFS-Metadatencacheversion, feste Record-, Attribut-/Runlist-, INDX- und
+  Pfadbudgets, Belegung, Mount-/Inhaltsgenerationen, Positiv-/Negativtreffer,
+  Tree-Walks, Invalidierungen und begrenzte Reclaimarbeit
 
 Als Abnahmezaun dienen stabile ABI-, Kapazitaets-, Fehler- und
 Konsistenzinvarianten. Historische Exaktzustands-Aggregate bleiben als
@@ -107,3 +110,8 @@ Sektoren, Timeouts sowie Completion- und FS-Tail in Ticks gegenueber.
 Der Datensatz `fs_cache_policy` ergaenzt dazu Policykonstanten und Deltas fuer
 Worker-Wakes, Hintergrunddrains und -sektoren, Device-Probes, diagnostische
 Fallbacks sowie Read-ahead-Anforderungen, Ausgaben und Treffer.
+Der Datensatz `ntfs_metadata_cache` haelt die festen Pro-Volume-Budgets und
+Belegungen sowie Vor-/Nach-Deltas fuer Record-, Attribut-/Runlist-, INDX- und
+Pfadzugriffe, Generationen, Invalidierungen und Reclaim fest. Zusammen mit
+dem Kalt-/Warmstatus des Laufs bleibt damit getrennt sichtbar, ob geringere
+Sektorarbeit oder wiederverwendete dekodierte Metadaten den Lauf erklaeren.
