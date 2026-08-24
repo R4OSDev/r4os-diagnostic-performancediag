@@ -69,6 +69,8 @@ fachliche Subsystemwerte:
 - Loader-/R4P-Lifecycle und Hot-Path-Indizes
 - Loader-Dateipuffer und Speichergrenzen
 - kanonische PCI-Inventur, Kapazitaetsrechnung und ECAM-Apertur
+- laufwerkslokale FS-Gates, controllerlokale Blockworker und residenten
+  Direktpufferbetrieb ohne Bounce-Allokation oder -Kopie
 
 Als Abnahmezaun dienen stabile ABI-, Kapazitaets-, Fehler- und
 Konsistenzinvarianten. Historische Exaktzustands-Aggregate bleiben als
@@ -92,3 +94,6 @@ Checks, fehlende Messklassen und die beobachteten Eigenkosten aller
 PerformanceSummary-Abfragen. Abfragen werden nicht in heissen Messschleifen
 ausgefuehrt. Benoetigte optionale Felder werden weiterhin mit hasFn geprueft;
 ein aelterer Kernel bleibt ueber den bisherigen TimeState-Fallback lesbar.
+Der zusaetzliche `storage_dispatch`-Datensatz stellt vor/nach der Arbeitslast
+Controller- und Workerzahl, Parallelitaetsmaximum, Direkt- und Bounce-Deltas,
+Timeouts sowie Completion- und FS-Tail in Ticks gegenueber.

@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.11";
+const module_version = "0.3.12";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -589,7 +589,7 @@ const App = struct {
             self.printBaseline(post_summary);
         }
         self.printObserverCost();
-        self.printMachineResult(passive_summary, ok);
+        self.printMachineResult(passive_summary, post_summary, ok);
 
         self.sys.write("PERFDIAG result: ");
         self.sys.println(if (ok) "OK" else "FAILED");
@@ -755,7 +755,12 @@ const App = struct {
         self.stats.check_count += 1;
     }
 
-    fn printMachineResult(self: *App, passive_summary: r4os.abi.ProgramPerformanceSummary, ok: bool) void {
+    fn printMachineResult(
+        self: *App,
+        passive_summary: r4os.abi.ProgramPerformanceSummary,
+        post_summary: r4os.abi.ProgramPerformanceSummary,
+        ok: bool,
+    ) void {
         self.sys.println("PERFDIAG machine-result begin");
 
         self.machineLinePrefix("run");
@@ -836,6 +841,39 @@ const App = struct {
         self.sys.printU64(passive_summary.flags);
         self.sys.write(",\"missing_flags\":");
         self.sys.printU64(passive_summary.missing_flags);
+        self.sys.println("}");
+
+        self.machineLinePrefix("storage_dispatch");
+        self.sys.write(",\"fs_drive_gate_count\":");
+        self.sys.printU64(post_summary.fs_drive_gate_count);
+        self.sys.write(",\"fs_parallel_active_max\":");
+        self.sys.printU64(post_summary.fs_parallel_active_max);
+        self.sys.write(",\"controller_count\":");
+        self.sys.printU64(post_summary.storage_controller_count);
+        self.sys.write(",\"worker_count\":");
+        self.sys.printU64(post_summary.storage_worker_count);
+        self.sys.write(",\"worker_parallel_active_max\":");
+        self.sys.printU64(post_summary.storage_worker_parallel_active_max);
+        self.sys.write(",\"worker_start_failure_delta\":");
+        self.sys.printU64(delta(post_summary.storage_worker_start_failures, passive_summary.storage_worker_start_failures));
+        self.sys.write(",\"direct_request_delta\":");
+        self.sys.printU64(delta(post_summary.storage_direct_requests, passive_summary.storage_direct_requests));
+        self.sys.write(",\"direct_byte_delta\":");
+        self.sys.printU64(delta(post_summary.storage_direct_bytes, passive_summary.storage_direct_bytes));
+        self.sys.write(",\"bounce_allocation_delta\":");
+        self.sys.printU64(delta(post_summary.storage_bounce_allocations, passive_summary.storage_bounce_allocations));
+        self.sys.write(",\"bounce_byte_delta\":");
+        self.sys.printU64(delta(post_summary.storage_bounce_bytes, passive_summary.storage_bounce_bytes));
+        self.sys.write(",\"bounce_copy_byte_delta\":");
+        self.sys.printU64(delta(post_summary.storage_bounce_copy_bytes, passive_summary.storage_bounce_copy_bytes));
+        self.sys.write(",\"direct_timeout_wait_delta\":");
+        self.sys.printU64(delta(post_summary.storage_direct_timeout_waits, passive_summary.storage_direct_timeout_waits));
+        self.sys.write(",\"completion_timeout_delta\":");
+        self.sys.printU64(delta(post_summary.storage_completion_timeouts, passive_summary.storage_completion_timeouts));
+        self.sys.write(",\"completion_tail_ticks\":");
+        self.sys.printU64(post_summary.storage_completion_max_ticks);
+        self.sys.write(",\"fs_tail_ticks\":");
+        self.sys.printU64(post_summary.fs_max_ticks);
         self.sys.println("}");
 
         var check_index: usize = 0;
@@ -1797,6 +1835,22 @@ const App = struct {
                 summary.memory_backing_store_slot_operation == r4os.abi.memory_backing_store_slot_operation_reserve) or
             (summary.memory_backing_store_slot_status == r4os.abi.memory_backing_store_slot_status_released and
                 summary.memory_backing_store_slot_operation == r4os.abi.memory_backing_store_slot_operation_release);
+        const storage_dispatch_ok = summary.fs_drive_gate_count == 26 and
+            summary.fs_active_requests <= summary.fs_parallel_active_max and
+            summary.fs_parallel_active_max > 0 and
+            summary.storage_controller_count > 0 and
+            summary.storage_worker_count == summary.storage_controller_count and
+            summary.storage_worker_parallel_active <= summary.storage_worker_parallel_active_max and
+            summary.storage_worker_parallel_active_max > 0 and
+            summary.storage_dispatch_reserved0 == 0 and
+            summary.fs_single_drive_requests > 0 and
+            summary.storage_worker_start_failures == 0 and
+            summary.storage_direct_requests > 0 and
+            summary.storage_direct_bytes > 0 and
+            summary.storage_bounce_allocations == 0 and
+            summary.storage_bounce_bytes == 0 and
+            summary.storage_bounce_copy_bytes == 0 and
+            summary.storage_direct_timeout_waits == 0;
         const legacy_snapshot_ok = summary.version == r4os.abi.performance_snapshot_version and
             summary.size >= @sizeOf(r4os.abi.ProgramPerformanceSummary) and
             summary.tick_hz > 0 and
@@ -1994,6 +2048,7 @@ const App = struct {
             loader_perf_ok and
             loader_memory_ok and
             hot_path_ok and
+            storage_dispatch_ok and
             flags_ok and
             wait_missing_ok and
             lock_ok;
@@ -2013,6 +2068,7 @@ const App = struct {
             summary.fs_cache_write_errors == 0 and
             summary.fs_cache_writeback_errors == 0 and
             summary.storage_completion_timeouts == 0 and
+            storage_dispatch_ok and
             summary.service_queue_used_total <= summary.service_queue_depth_total and
             service_payload_ok and
             service_lock_ok and
@@ -2032,6 +2088,7 @@ const App = struct {
             summary.memory_vm_pager_data_lost_pages == 0;
         self.printCheck("Service payload length/reset counters", service_payload_ok);
         self.printCheck("Service endpoint lock/scan counters", service_lock_ok);
+        self.printCheck("Parallel storage dispatch/direct buffers", storage_dispatch_ok);
         self.printCheck("Performance summary contract", contract_ok);
         if (!legacy_snapshot_ok) {
             self.sys.println("  Legacy exact-state aggregate: OBSERVED (not a contract gate)");

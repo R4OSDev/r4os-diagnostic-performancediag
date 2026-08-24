@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.11`
+- Version: `0.3.12`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -72,7 +72,9 @@ scans remain visible beside latency distributions. Every successful run ends
 with a delimited, versioned NDJSON v7
 result block containing clock source and quality, the event backend and exact
 rate, run metadata, raw samples, distributions, checks, missing measurement
-flags, and measured summary-query overhead.
+flags, measured summary-query overhead, and a storage-dispatch record. That
+record preserves controller/worker parallelism, direct-versus-bounce deltas,
+completion timeouts, and filesystem/block tail ticks outside the timed loop.
 
 Conformance gates use stable ABI, capacity, error, and consistency invariants.
 Legacy exact-state aggregates remain visible as observations, but are not
