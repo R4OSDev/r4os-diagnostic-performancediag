@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.15`
+- Version: `0.3.16`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -60,8 +60,13 @@ failed isolation or restoration, a failed 10-second quiescence bound, and an
 exhausted three-attempt bound still fail the run. Isolation, quiescence,
 discard counts, and the accepted attempt number remain visible in the
 human-readable and NDJSON v7 output.
-`/BENCHMARK /DRIVER-WORK` measures a
-fixed HDA workload against the active driver owner. `/BENCHMARK
+`/BENCHMARK /DRIVER-WORK` measures a fixed HDA workload against the active
+driver owner. It requires snapshot v2 and reports the isolated audio worker,
+deadline queue time, misses, lateness, callback-budget overruns, and admission
+rejections beside the existing queue/run/E2E metrics. A transient release
+retry during completion publication is accepted only when every terminal
+item is subsequently claimed and released and no waiter blocks disposal.
+`/BENCHMARK
 /PCI-INVENTORY` performs 100 complete DeviceInventory summary-and-record
 workloads per sample and proves with before/after counters that the cached
 consumer path performs no PCI configuration or ECAM mapping work. Every

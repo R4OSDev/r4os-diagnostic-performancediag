@@ -215,6 +215,20 @@ pub fn throughputKbPerSecondNs(bytes: u64, elapsed_ns: u64) u64 {
     return @intCast(numerator / denominator);
 }
 
+pub fn driverWorkReleaseAccountingOk(
+    terminal: u64,
+    releases: u64,
+    claimed_releases: u64,
+    release_busy: u64,
+    publication_pending_releases: u64,
+    waiter_blocked_releases: u64,
+) bool {
+    return releases == terminal and
+        claimed_releases == releases and
+        waiter_blocked_releases == 0 and
+        release_busy == publication_pending_releases;
+}
+
 pub fn summarize(values: []const u64) Distribution {
     if (values.len == 0) return .{};
     std.debug.assert(values.len <= max_repetitions);
@@ -403,6 +417,14 @@ test "nanosecond throughput preserves the 1024-byte KB convention" {
     const ten_mb = 10 * bytes_per_mb;
     try std.testing.expectEqual(@as(u64, 10 * kb_per_mb), throughputKbPerSecondNs(ten_mb, 1_000_000_000));
     try std.testing.expectEqual(@as(u64, 0), throughputKbPerSecondNs(ten_mb, 0));
+}
+
+test "driver work release accounting allows only drained publication retries" {
+    try std.testing.expect(driverWorkReleaseAccountingOk(29, 29, 29, 1, 1, 0));
+    try std.testing.expect(driverWorkReleaseAccountingOk(29, 29, 29, 0, 0, 0));
+    try std.testing.expect(!driverWorkReleaseAccountingOk(29, 28, 28, 1, 1, 0));
+    try std.testing.expect(!driverWorkReleaseAccountingOk(29, 29, 29, 2, 1, 0));
+    try std.testing.expect(!driverWorkReleaseAccountingOk(29, 29, 29, 1, 0, 1));
 }
 
 test "distribution preserves small differences and tail values" {

@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.15";
+const module_version = "0.3.16";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -174,6 +174,16 @@ const DriverWorkSample = struct {
     selection_task: u64 = 0,
     selection_irq_preferred: u64 = 0,
     selection_task_fairness: u64 = 0,
+    deadline_submitted: u64 = 0,
+    deadline_started: u64 = 0,
+    deadline_completed: u64 = 0,
+    deadline_misses: u64 = 0,
+    deadline_budget_overruns: u64 = 0,
+    deadline_queue_rejections: u64 = 0,
+    deadline_queue_total_ticks: u64 = 0,
+    deadline_queue_max_ticks_after: u64 = 0,
+    deadline_lateness_total_ticks: u64 = 0,
+    deadline_lateness_max_ticks_after: u64 = 0,
     queue_total_ns: u64 = 0,
     queue_ns_per_started: u64 = 0,
     queue_max_before_ns: u64 = 0,
@@ -436,7 +446,9 @@ fn prepareDriverWorkPcm() void {
 fn driverWorkSlotAccountingOk(info: r4os.abi.ProgramDriverWorkPerformanceInfo) bool {
     return info.free_slots + info.used_slots == info.queue_capacity and
         info.used_slots == info.queued_slots + info.running_slots + info.completed_slots + info.cancelled_slots and
-        info.queued_slots == info.irq_queued_slots + info.task_queued_slots and
+        info.queued_slots == info.irq_queued_slots + info.task_queued_slots + info.deadline_queued_slots and
+        info.deadline_queued_slots <= info.deadline_queue_capacity and
+        info.deadline_running_slots <= info.running_slots and
         info.queue_high_water <= info.queue_capacity and
         info.used_high_water <= info.queue_capacity and
         info.retained_high_water <= info.queue_capacity;
@@ -447,14 +459,18 @@ fn driverWorkSnapshotContractOk(info: r4os.abi.ProgramDriverWorkPerformanceInfo)
     const owner_accounting_ok = info.selected_owner == 0 or
         (info.owner_used_slots == info.owner_queued_slots + info.owner_running_slots +
             info.owner_completed_slots + info.owner_cancelled_slots and
-            info.owner_queued_slots == info.owner_irq_queued_slots + info.owner_task_queued_slots and
+            info.owner_queued_slots == info.owner_irq_queued_slots + info.owner_task_queued_slots + info.owner_deadline_queued_slots and
+            info.owner_deadline_running_slots <= info.owner_running_slots and
             info.owner_used_high_water <= info.queue_capacity and
             info.owner_retained_high_water <= info.queue_capacity);
-    return info.version >= 1 and
+    return info.version >= 2 and
         info.size >= @sizeOf(r4os.abi.ProgramDriverWorkPerformanceInfo) and
         info.initialized != 0 and
         info.worker_started != 0 and
-        info.worker_count == 1 and
+        info.worker_count == 2 and
+        info.deadline_worker_started != 0 and
+        info.deadline_worker_count == 1 and
+        info.deadline_queue_capacity > 0 and
         info.queue_capacity >= r4os.abi.driver_work_queue_capacity and
         info.irq_burst_limit > 0 and
         selected_owner_ok and
@@ -1337,6 +1353,16 @@ const App = struct {
             self.printJsonU64Field("selection_task", sample.selection_task);
             self.printJsonU64Field("selection_irq_preferred", sample.selection_irq_preferred);
             self.printJsonU64Field("selection_task_fairness", sample.selection_task_fairness);
+            self.printJsonU64Field("deadline_submitted", sample.deadline_submitted);
+            self.printJsonU64Field("deadline_started", sample.deadline_started);
+            self.printJsonU64Field("deadline_completed", sample.deadline_completed);
+            self.printJsonU64Field("deadline_misses", sample.deadline_misses);
+            self.printJsonU64Field("deadline_budget_overruns", sample.deadline_budget_overruns);
+            self.printJsonU64Field("deadline_queue_rejections", sample.deadline_queue_rejections);
+            self.printJsonU64Field("deadline_queue_total_ticks", sample.deadline_queue_total_ticks);
+            self.printJsonU64Field("deadline_queue_max_ticks_after", sample.deadline_queue_max_ticks_after);
+            self.printJsonU64Field("deadline_lateness_total_ticks", sample.deadline_lateness_total_ticks);
+            self.printJsonU64Field("deadline_lateness_max_ticks_after", sample.deadline_lateness_max_ticks_after);
             self.printJsonU64Field("queue_total_ns", sample.queue_total_ns);
             self.printJsonU64Field("queue_ns_per_started", sample.queue_ns_per_started);
             self.printJsonU64Field("queue_max_before_ns", sample.queue_max_before_ns);
@@ -3641,7 +3667,7 @@ const App = struct {
             if (!driverWorkSnapshotContractOk(aggregate_after)) return false;
 
             var selected_owner: u32 = 0;
-            var selected_irq_delta: u64 = 0;
+            var selected_deadline_delta: u64 = 0;
             var selected_before: r4os.abi.ProgramDriverWorkPerformanceInfo = .{};
             var selected_after: r4os.abi.ProgramDriverWorkPerformanceInfo = .{};
             owner_index = 0;
@@ -3649,18 +3675,15 @@ const App = struct {
                 const owner: u32 = @intCast(owner_index + 1);
                 const after = self.dev.performanceDriverWork(owner) orelse return false;
                 if (!driverWorkSnapshotContractOk(after)) return false;
-                const irq_delta = counterDelta(
-                    owner_before[owner_index].metrics.submitted_actual_irq,
-                    after.metrics.submitted_actual_irq,
-                );
-                if (irq_delta > selected_irq_delta) {
-                    selected_irq_delta = irq_delta;
+                const deadline_delta = counterDelta(owner_before[owner_index].deadline_submitted, after.deadline_submitted);
+                if (deadline_delta > selected_deadline_delta) {
+                    selected_deadline_delta = deadline_delta;
                     selected_owner = owner;
                     selected_before = owner_before[owner_index];
                     selected_after = after;
                 }
             }
-            if (selected_owner == 0 or selected_irq_delta == 0) return false;
+            if (selected_owner == 0 or selected_deadline_delta == 0) return false;
 
             const before = selected_before.metrics;
             const after = selected_after.metrics;
@@ -3675,7 +3698,7 @@ const App = struct {
                 .audio_writes = audio_writes,
                 .audio_bytes = audio_bytes,
                 .submitted = counterDelta(before.submitted, after.submitted),
-                .submitted_actual_irq = selected_irq_delta,
+                .submitted_actual_irq = counterDelta(before.submitted_actual_irq, after.submitted_actual_irq),
                 .submitted_actual_task = counterDelta(before.submitted_actual_task, after.submitted_actual_task),
                 .submitted_irq_class = counterDelta(before.submitted_irq_class, after.submitted_irq_class),
                 .submitted_task_class = counterDelta(before.submitted_task_class, after.submitted_task_class),
@@ -3703,6 +3726,16 @@ const App = struct {
                 .selection_task = counterDelta(before.selection_task, after.selection_task),
                 .selection_irq_preferred = counterDelta(before.selection_irq_preferred, after.selection_irq_preferred),
                 .selection_task_fairness = counterDelta(before.selection_task_fairness, after.selection_task_fairness),
+                .deadline_submitted = selected_deadline_delta,
+                .deadline_started = counterDelta(selected_before.deadline_started, selected_after.deadline_started),
+                .deadline_completed = counterDelta(selected_before.deadline_completed, selected_after.deadline_completed),
+                .deadline_misses = counterDelta(selected_before.deadline_misses, selected_after.deadline_misses),
+                .deadline_budget_overruns = counterDelta(selected_before.deadline_budget_overruns, selected_after.deadline_budget_overruns),
+                .deadline_queue_rejections = counterDelta(selected_before.deadline_queue_rejections, selected_after.deadline_queue_rejections),
+                .deadline_queue_total_ticks = counterDelta(selected_before.deadline_queue_total_ticks, selected_after.deadline_queue_total_ticks),
+                .deadline_queue_max_ticks_after = selected_after.deadline_queue_max_ticks,
+                .deadline_lateness_total_ticks = counterDelta(selected_before.deadline_lateness_total_ticks, selected_after.deadline_lateness_total_ticks),
+                .deadline_lateness_max_ticks_after = selected_after.deadline_lateness_max_ticks,
                 .queue_total_ns = queue_total_ns,
                 .queue_ns_per_started = if (started == 0) 0 else queue_total_ns / started,
                 .queue_max_before_ns = before.queue_max_ns,
@@ -3766,24 +3799,34 @@ const App = struct {
                 audio_writes == measurement.driver_work_audio_writes_per_sample and
                 audio_bytes == measurement.driver_work_audio_writes_per_sample * measurement.driver_work_audio_bytes_per_write and
                 sample.submitted > 0 and
-                sample.submitted == sample.submitted_actual_irq and
+                sample.submitted == sample.submitted_actual_irq +% sample.submitted_actual_task and
                 sample.submitted == sample.submitted_irq_class and
-                sample.submitted_actual_task == 0 and
                 sample.submitted_task_class == 0 and
+                sample.deadline_submitted == sample.submitted and
                 sample.started > 0 and
                 sample.started <= sample.submitted and
                 sample.completed > 0 and
                 sample.completed <= sample.started and
+                sample.deadline_started == sample.started and
+                sample.deadline_completed == sample.completed and
                 terminal <= sample.submitted and
                 sample.wake_publications == terminal and
-                sample.selection_irq == sample.started and
+                sample.selection_irq +% sample.selection_task +% sample.deadline_started == sample.started and
+                sample.deadline_misses == 0 and
+                sample.deadline_budget_overruns == 0 and
+                sample.deadline_queue_rejections == 0 and
                 sample.failed == 0 and
                 sample.dropped == 0 and
                 sample.full_rejections == 0 and
                 sample.retained_full_rejections == 0 and
-                sample.release_busy == 0 and
-                sample.publication_pending_releases == 0 and
-                sample.waiter_blocked_releases == 0 and
+                measurement.driverWorkReleaseAccountingOk(
+                    terminal,
+                    sample.releases,
+                    sample.claimed_releases,
+                    sample.release_busy,
+                    sample.publication_pending_releases,
+                    sample.waiter_blocked_releases,
+                ) and
                 sample.invalid_handles == 0 and
                 sample.stale_handles == 0 and
                 sample.wait_timeouts == 0 and
@@ -3861,6 +3904,12 @@ const App = struct {
             self.sys.printU64(sample.started);
             self.sys.write("/");
             self.sys.printU64(sample.completed);
+            self.sys.write(" deadline/miss/overrun=");
+            self.sys.printU64(sample.deadline_completed);
+            self.sys.write("/");
+            self.sys.printU64(sample.deadline_misses);
+            self.sys.write("/");
+            self.sys.printU64(sample.deadline_budget_overruns);
             self.sys.write(" queueNs/work=");
             self.sys.printU64(sample.queue_ns_per_started);
             self.sys.write(" runNs/work=");
@@ -4565,7 +4614,11 @@ const App = struct {
             compact.metrics.failed == summary.driver_work_failed and
             compact.metrics.dropped == summary.driver_work_dropped and
             compact.metrics.wait_timeouts == summary.driver_work_wait_timeouts and
-            compact.metrics.invalid_handles +% compact.metrics.stale_handles == summary.driver_work_invalid_handles;
+            compact.metrics.invalid_handles +% compact.metrics.stale_handles == summary.driver_work_invalid_handles and
+            compact.deadline_started <= compact.deadline_submitted and
+            compact.deadline_completed <= compact.deadline_started and
+            compact.deadline_budget_overruns == 0 and
+            compact.deadline_queue_rejections == 0;
         const ok = (summary.flags & r4os.abi.performance_flag_driver_workqueue_ready) != 0 and
             compact_ok and
             summary.driver_work_worker_started != 0 and
@@ -4610,6 +4663,14 @@ const App = struct {
             self.sys.printU64(compact.metrics.scan_passes);
             self.sys.write(" irqOffMaxNs=");
             self.sys.printU64(compact.metrics.critical_max_ns);
+            self.sys.write(" deadline/miss/overrun/reject=");
+            self.sys.printU64(compact.deadline_completed);
+            self.sys.write("/");
+            self.sys.printU64(compact.deadline_misses);
+            self.sys.write("/");
+            self.sys.printU64(compact.deadline_budget_overruns);
+            self.sys.write("/");
+            self.sys.printU64(compact.deadline_queue_rejections);
             self.sys.println("");
         }
         return ok;
@@ -4849,6 +4910,26 @@ const App = struct {
         self.sys.write(" waitmax=");
         self.sys.printU64(summary.driver_work_wait_max_ticks);
         self.sys.println("");
+
+        if (self.dev.performanceDriverWork(0)) |driver_work| {
+            self.sys.write("  Audio deadline work: queued/running/high=");
+            self.sys.printU64(driver_work.deadline_queued_slots);
+            self.sys.write("/");
+            self.sys.printU64(driver_work.deadline_running_slots);
+            self.sys.write("/");
+            self.sys.printU64(driver_work.deadline_queue_high_water);
+            self.sys.write(" submitted/done=");
+            self.sys.printU64(driver_work.deadline_submitted);
+            self.sys.write("/");
+            self.sys.printU64(driver_work.deadline_completed);
+            self.sys.write(" miss/overrun/reject=");
+            self.sys.printU64(driver_work.deadline_misses);
+            self.sys.write("/");
+            self.sys.printU64(driver_work.deadline_budget_overruns);
+            self.sys.write("/");
+            self.sys.printU64(driver_work.deadline_queue_rejections);
+            self.sys.println("");
+        }
 
         self.sys.write("  Storage worker: started=");
         self.sys.printU64(summary.storage_worker_started);

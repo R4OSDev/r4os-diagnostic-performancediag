@@ -42,6 +42,14 @@ PERFDIAG trennt passive Aufnahme, Vertragskonformitaet und Benchmark:
   und E2E-Nanosekunden, Slot- und Ownerzustaende, Waiter/Wakes, Releases,
   Cleanup, Scanarbeit, IRQ-off-Zeiten und Fehler werden als Rohwerte
   ausgegeben. Die kompakte R4DEV-Sicht wird fuer Owner 0 bis 16 gelesen.
+  Snapshot v2 verlangt den getrennten `r4d-audio`-Worker und belegt, dass die
+  gesamte ausgewaehlte Ownerarbeit als Deadlineklasse lief. Queuezeit,
+  Deadline-Misses, Budgetueberzuege, Lateness und Admission-Rejections werden
+  getrennt ausgegeben; ein regulaerer Messdatensatz akzeptiert fuer die drei
+  Fehlerklassen nur null. Ein kurzer Release-Retry waehrend der
+  Completion-Publikation ist nur gueltig, wenn er vollstaendig als solches
+  abgerechnet wird, kein Waiter die Freigabe blockiert und am Probenende alle
+  terminalen Arbeiten geclaimt und freigegeben sind.
 - /BENCHMARK /PCI-INVENTORY fuehrt pro Wiederholung 100 vollstaendige
   DeviceInventory-Summary-und-Record-Arbeitsmengen aus. Vorher/Nachher-
   Snapshots belegen, dass der gecachte Verbraucherpfad weder PCI-
@@ -62,7 +70,7 @@ Der Konformitaetsmodus prueft den aktuellen R4DEV-Performancevertrag und
 fachliche Subsystemwerte:
 
 - Scheduler, Preemption, Wait-/Queue-Latenzen und SIMD-State
-- Driver-Workqueue und Storage-Completions
+- normale Driver-Workqueue, isolierte Audio-Deadlinequeue und Storage-Completions
 - Memory-Pressure, Reclaim, Backing Store und Page-I/O
 - Audio-Latenz und Streamfortschritt
 - monotone Clockmetadaten, Boot-/Loader-Nanosekunden und IRQ-Zeitabdeckung
