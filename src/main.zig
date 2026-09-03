@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.17";
+const module_version = "0.3.18";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -1070,6 +1070,30 @@ const App = struct {
         self.sys.printU64(delta(post_summary.ntfs_metadata_external_invalidations, passive_summary.ntfs_metadata_external_invalidations));
         self.sys.write(",\"invalidated_entry_delta\":");
         self.sys.printU64(delta(post_summary.ntfs_metadata_invalidated_entries, passive_summary.ntfs_metadata_invalidated_entries));
+        self.sys.write(",\"payload_write_retention_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_payload_write_retentions, passive_summary.ntfs_metadata_payload_write_retentions));
+        self.sys.write(",\"system_write_retention_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_system_write_retentions, passive_summary.ntfs_metadata_system_write_retentions));
+        self.sys.write(",\"targeted_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_targeted_invalidations, passive_summary.ntfs_metadata_targeted_invalidations));
+        self.sys.write(",\"targeted_record_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_targeted_record_invalidations, passive_summary.ntfs_metadata_targeted_record_invalidations));
+        self.sys.write(",\"targeted_attribute_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_targeted_attribute_invalidations, passive_summary.ntfs_metadata_targeted_attribute_invalidations));
+        self.sys.write(",\"targeted_directory_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_targeted_directory_invalidations, passive_summary.ntfs_metadata_targeted_directory_invalidations));
+        self.sys.write(",\"global_mutation_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_global_mutation_invalidations, passive_summary.ntfs_metadata_global_mutation_invalidations));
+        self.sys.write(",\"recovery_invalidation_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_recovery_invalidations, passive_summary.ntfs_metadata_recovery_invalidations));
+        self.sys.write(",\"mutation_invalidated_record_entry_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_mutation_invalidated_record_entries, passive_summary.ntfs_metadata_mutation_invalidated_record_entries));
+        self.sys.write(",\"mutation_invalidated_attribute_entry_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_mutation_invalidated_attribute_entries, passive_summary.ntfs_metadata_mutation_invalidated_attribute_entries));
+        self.sys.write(",\"mutation_invalidated_index_entry_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_mutation_invalidated_index_entries, passive_summary.ntfs_metadata_mutation_invalidated_index_entries));
+        self.sys.write(",\"mutation_invalidated_path_entry_delta\":");
+        self.sys.printU64(delta(post_summary.ntfs_metadata_mutation_invalidated_path_entries, passive_summary.ntfs_metadata_mutation_invalidated_path_entries));
         self.sys.write(",\"reclaim_request_delta\":");
         self.sys.printU64(delta(post_summary.ntfs_metadata_reclaim_requests, passive_summary.ntfs_metadata_reclaim_requests));
         self.sys.write(",\"reclaim_scan_delta\":");
@@ -2109,7 +2133,11 @@ const App = struct {
             summary.ntfs_metadata_attribute_capacity +
             summary.ntfs_metadata_index_capacity +
             summary.ntfs_metadata_path_capacity;
-        const ntfs_metadata_cache_ok = summary.ntfs_metadata_cache_version == 1 and
+        const ntfs_mutation_invalidated_entries = summary.ntfs_metadata_mutation_invalidated_record_entries +%
+            summary.ntfs_metadata_mutation_invalidated_attribute_entries +%
+            summary.ntfs_metadata_mutation_invalidated_index_entries +%
+            summary.ntfs_metadata_mutation_invalidated_path_entries;
+        const ntfs_metadata_cache_ok = summary.ntfs_metadata_cache_version == 2 and
             summary.ntfs_metadata_cache_active_volumes > 0 and
             summary.ntfs_metadata_cache_bytes_per_volume > 0 and
             summary.ntfs_metadata_cache_slot_capacity == 22 and
@@ -2130,8 +2158,18 @@ const App = struct {
             summary.ntfs_metadata_path_positive_stores +% summary.ntfs_metadata_path_negative_stores <=
                 summary.ntfs_metadata_path_misses and
             summary.ntfs_metadata_mount_invalidations >= summary.ntfs_metadata_cache_active_volumes and
+            summary.ntfs_metadata_payload_write_retentions > 0 and
+            summary.ntfs_metadata_system_write_retentions > 0 and
+            summary.ntfs_metadata_targeted_invalidations > 0 and
+            summary.ntfs_metadata_targeted_invalidations ==
+                summary.ntfs_metadata_targeted_record_invalidations +%
+                    summary.ntfs_metadata_targeted_attribute_invalidations +%
+                    summary.ntfs_metadata_targeted_directory_invalidations and
+            summary.ntfs_metadata_global_mutation_invalidations >= summary.ntfs_metadata_recovery_invalidations and
             summary.ntfs_metadata_mutation_invalidations > 0 and
             summary.ntfs_metadata_invalidated_entries > 0 and
+            ntfs_mutation_invalidated_entries > 0 and
+            ntfs_mutation_invalidated_entries <= summary.ntfs_metadata_invalidated_entries and
             summary.ntfs_metadata_reclaim_requests > 0 and
             summary.ntfs_metadata_reclaim_scans > 0 and
             summary.ntfs_metadata_reclaim_scans <= summary.ntfs_metadata_reclaim_requests * 22 and
@@ -5402,6 +5440,20 @@ const App = struct {
         self.sys.printU64(summary.ntfs_metadata_mutation_invalidations);
         self.sys.write("/");
         self.sys.printU64(summary.ntfs_metadata_external_invalidations);
+        self.sys.write(" retained(payload/system)=");
+        self.sys.printU64(summary.ntfs_metadata_payload_write_retentions);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_system_write_retentions);
+        self.sys.write(" targeted(record/attr/dir)=");
+        self.sys.printU64(summary.ntfs_metadata_targeted_record_invalidations);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_targeted_attribute_invalidations);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_targeted_directory_invalidations);
+        self.sys.write(" global/recovery=");
+        self.sys.printU64(summary.ntfs_metadata_global_mutation_invalidations);
+        self.sys.write("/");
+        self.sys.printU64(summary.ntfs_metadata_recovery_invalidations);
         self.sys.write(" reclaim=");
         self.sys.printU64(summary.ntfs_metadata_reclaim_scans);
         self.sys.write("/");

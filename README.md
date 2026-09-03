@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.3.17`
+- Version: `0.3.18`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/DIAG/PERFDIAG.R4X`
 - Image scope: `test`
 - Canonical project manifest: `module.R4MF`
@@ -78,7 +78,8 @@ with a delimited, versioned NDJSON v7
 result block containing clock source and quality, the event backend and exact
 rate, run metadata, raw samples, distributions, checks, missing measurement
 flags, measured summary-query overhead, a storage-dispatch record, and fixed
-NTFS metadata-cache budgets with hit, invalidation, and reclaim deltas. The
+NTFS metadata-cache budgets with hit, targeted/global invalidation, retained
+payload/system-write, removed-entry-class, and reclaim deltas. The
 storage-dispatch record preserves controller/worker parallelism,
 direct-versus-bounce deltas,
 multi-sector writes, selective writeback and retained foreign dirty sectors,
