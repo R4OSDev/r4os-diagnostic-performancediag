@@ -81,10 +81,12 @@ fachliche Subsystemwerte:
   Direktpufferbetrieb ohne Bounce-Allokation oder -Kopie
 - Mehrsektorwrites sowie operationslokale Pagecache-Commits mit getrennten
   Zaehlern fuer entladene und bewusst zurueckgehaltene fremde Dirty-Sektoren
-- Pagecache-Policyversion, Devicekapazitaet, Dirty-Hysterese, Alters- und
-  Arbeitsbudget, gestarteten Hintergrundowner, fehlerfreien autonomen
-  Fortschritt, begrenzte Device-Probes und Read-ahead-Bilanzen ohne
-  diagnostischen Vollscan-Fallback
+- Pagecache-Policyversion, RAM-/Druckkapazitaet von 64 bis 512 4-KB-Seiten,
+  Dirty-Hysterese, Alters- und Arbeitsbudget, gestarteten Hintergrundowner,
+  fehlerfreien autonomen Fortschritt, begrenzte Device-Probes, ein bewusst
+  deaktiviertes Read-ahead-Fenster sowie rohe Mehrseiten-Fill-, Backend-, Seiten-, Sektor-,
+  Byte-, Fehler-, Retry-, Kopier-, Lock- und Trimzaehler ohne diagnostischen
+  Vollscan-Fallback
 - NTFS-Metadatencacheversion, feste Record-, Attribut-/Runlist-, INDX- und
   Pfadbudgets, Belegung, Mount-/Inhaltsgenerationen, Positiv-/Negativtreffer,
   Tree-Walks, Invalidierungen und begrenzte Reclaimarbeit
@@ -117,7 +119,9 @@ Mehrsektorwrites, selektiven Writeback, zurueckgehaltene fremde Dirty-
 Sektoren, Timeouts sowie Completion- und FS-Tail in Ticks gegenueber.
 Der Datensatz `fs_cache_policy` ergaenzt dazu Policykonstanten und Deltas fuer
 Worker-Wakes, Hintergrunddrains und -sektoren, Device-Probes, diagnostische
-Fallbacks sowie Read-ahead-Anforderungen, Ausgaben und Treffer.
+Fallbacks sowie Read-ahead-Anforderungen, Ausgaben und Treffer. In 0.75.6
+muessen Fenster und Aktivitaetszaehler null bleiben; spekulative Varianten
+wurden wegen reproduzierbarer Subsystemhaenger nicht freigegeben.
 Der Datensatz `ntfs_metadata_cache` haelt die festen Pro-Volume-Budgets und
 Belegungen sowie Vor-/Nach-Deltas fuer Record-, Attribut-/Runlist-, INDX- und
 Pfadzugriffe, Generationen, Invalidierungen und Reclaim fest. Zusammen mit

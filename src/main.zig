@@ -1,7 +1,7 @@
 const r4os = @import("r4os");
 const measurement = @import("measurement.zig");
 
-const module_version = "0.3.16";
+const module_version = "0.3.17";
 
 const backing_store_path = "C:\\TEMP\\R4PAGE.BIN";
 const missing_backing_store_path = "C:\\TEMP\\R4MISS.SWP";
@@ -937,6 +937,56 @@ const App = struct {
         self.sys.printU64(delta(post_summary.fs_cache_read_ahead_issued, passive_summary.fs_cache_read_ahead_issued));
         self.sys.write(",\"read_ahead_hit_delta\":");
         self.sys.printU64(delta(post_summary.fs_cache_read_ahead_hits, passive_summary.fs_cache_read_ahead_hits));
+        self.sys.write(",\"capacity_min_pages\":");
+        self.sys.printU64(post_summary.fs_cache_capacity_min_pages);
+        self.sys.write(",\"capacity_max_pages\":");
+        self.sys.printU64(post_summary.fs_cache_capacity_max_pages);
+        self.sys.write(",\"capacity_ram_limit_pages\":");
+        self.sys.printU64(post_summary.fs_cache_capacity_ram_limit_pages);
+        self.sys.write(",\"capacity_active_limit_pages\":");
+        self.sys.printU64(post_summary.fs_cache_capacity_active_limit_pages);
+        self.sys.write(",\"capacity_pressure_level\":");
+        self.sys.printU64(post_summary.fs_cache_capacity_pressure_level);
+        self.sys.write(",\"read_ahead_window_pages\":");
+        self.sys.printU64(post_summary.fs_cache_read_ahead_window_pages);
+        self.sys.write(",\"read_ahead_window_max_pages\":");
+        self.sys.printU64(post_summary.fs_cache_read_ahead_window_max_pages);
+        self.sys.write(",\"fill_run_request_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_run_requests, passive_summary.fs_cache_fill_run_requests));
+        self.sys.write(",\"fill_backend_request_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_run_backend_requests, passive_summary.fs_cache_fill_run_backend_requests));
+        self.sys.write(",\"fill_page_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_run_pages, passive_summary.fs_cache_fill_run_pages));
+        self.sys.write(",\"fill_sector_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_run_sectors, passive_summary.fs_cache_fill_run_sectors));
+        self.sys.write(",\"fill_byte_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_run_bytes, passive_summary.fs_cache_fill_run_bytes));
+        self.sys.write(",\"fill_failure_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_run_failures, passive_summary.fs_cache_fill_run_failures));
+        self.sys.write(",\"fill_retry_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_run_retries, passive_summary.fs_cache_fill_run_retries));
+        self.sys.write(",\"fill_max_pages\":");
+        self.sys.printU64(post_summary.fs_cache_fill_run_max_pages);
+        self.sys.write(",\"fill_scatter_copy_byte_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_scatter_copy_bytes, passive_summary.fs_cache_fill_scatter_copy_bytes));
+        self.sys.write(",\"read_staging_copy_byte_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_staging_copy_bytes, passive_summary.fs_cache_read_staging_copy_bytes));
+        self.sys.write(",\"read_caller_copy_byte_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_caller_copy_bytes, passive_summary.fs_cache_read_caller_copy_bytes));
+        self.sys.write(",\"read_publish_lock_drop_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_publish_lock_drops, passive_summary.fs_cache_read_publish_lock_drops));
+        self.sys.write(",\"fill_lock_drop_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_fill_lock_drops, passive_summary.fs_cache_fill_lock_drops));
+        self.sys.write(",\"capacity_reduction_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_capacity_reductions, passive_summary.fs_cache_capacity_reductions));
+        self.sys.write(",\"capacity_trimmed_page_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_capacity_trimmed_pages, passive_summary.fs_cache_capacity_trimmed_pages));
+        self.sys.write(",\"read_ahead_page_scheduled_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_ahead_pages_scheduled, passive_summary.fs_cache_read_ahead_pages_scheduled));
+        self.sys.write(",\"read_ahead_page_issued_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_ahead_pages_issued, passive_summary.fs_cache_read_ahead_pages_issued));
+        self.sys.write(",\"read_ahead_random_reset_delta\":");
+        self.sys.printU64(delta(post_summary.fs_cache_read_ahead_random_resets, passive_summary.fs_cache_read_ahead_random_resets));
         self.sys.println("}");
 
         self.machineLinePrefix("ntfs_metadata_cache");
@@ -2016,7 +2066,7 @@ const App = struct {
             summary.fs_cache_bulk_write_requests <= summary.fs_cache_bulk_write_sectors / 2 and
             summary.fs_cache_selective_flushes <= summary.fs_cache_flushes and
             summary.fs_cache_selective_writeback_sectors <= summary.fs_cache_writeback_sectors;
-        const cache_policy_ok = summary.fs_cache_policy_version == 1 and
+        const cache_policy_ok = summary.fs_cache_policy_version == 2 and
             summary.fs_cache_policy_device_capacity > 0 and
             summary.fs_cache_policy_device_capacity <= 8 and
             summary.fs_cache_policy_dirty_low_pages > 0 and
@@ -2030,7 +2080,30 @@ const App = struct {
             summary.fs_cache_policy_device_dirty_high_water <= summary.fs_cache_capacity and
             summary.fs_cache_policy_background_errors == 0 and
             summary.fs_cache_policy_full_scan_fallbacks == 0 and
-            summary.fs_cache_read_ahead_hits <= summary.fs_cache_read_ahead_issued;
+            summary.fs_cache_read_ahead_hits <= summary.fs_cache_read_ahead_issued and
+            summary.fs_cache_capacity_min_pages == 64 and
+            summary.fs_cache_capacity_max_pages == 512 and
+            summary.fs_cache_capacity_ram_limit_pages >= summary.fs_cache_capacity_min_pages and
+            summary.fs_cache_capacity_ram_limit_pages <= summary.fs_cache_capacity_max_pages and
+            summary.fs_cache_capacity_active_limit_pages >= summary.fs_cache_capacity_min_pages and
+            summary.fs_cache_capacity_active_limit_pages <= summary.fs_cache_capacity_ram_limit_pages and
+            summary.fs_cache_capacity_pressure_level <= 3 and
+            summary.fs_cache_read_ahead_window_pages == 0 and
+            summary.fs_cache_read_ahead_window_max_pages == 0 and
+            summary.fs_cache_read_ahead_requests == 0 and
+            summary.fs_cache_read_ahead_issued == 0 and
+            summary.fs_cache_capacity_reserved0 == 0 and
+            summary.fs_cache_fill_run_pages >= summary.fs_cache_fill_run_requests * 2 and
+            summary.fs_cache_fill_run_backend_requests == summary.fs_cache_fill_run_requests + summary.fs_cache_fill_run_retries and
+            summary.fs_cache_fill_run_sectors >= summary.fs_cache_fill_run_pages and
+            summary.fs_cache_fill_run_bytes == summary.fs_cache_fill_run_sectors * 512 and
+            summary.fs_cache_fill_run_failures <= summary.fs_cache_fill_run_requests and
+            summary.fs_cache_fill_run_max_pages <= 2 and
+            summary.fs_cache_fill_scatter_copy_bytes <= summary.fs_cache_fill_run_bytes and
+            summary.fs_cache_read_staging_copy_bytes == summary.fs_cache_read_caller_copy_bytes and
+            summary.fs_cache_fill_lock_drops == summary.fs_cache_fill_run_requests and
+            summary.fs_cache_read_ahead_pages_issued == summary.fs_cache_read_ahead_issued and
+            summary.fs_cache_read_ahead_pages_scheduled >= summary.fs_cache_read_ahead_pages_issued;
         const ntfs_active_volumes: u64 = summary.ntfs_metadata_cache_active_volumes;
         const ntfs_capacity_sum = summary.ntfs_metadata_record_capacity +
             summary.ntfs_metadata_attribute_capacity +
@@ -5223,6 +5296,56 @@ const App = struct {
         self.sys.printU64(summary.fs_cache_read_ahead_issued);
         self.sys.write("/");
         self.sys.printU64(summary.fs_cache_read_ahead_hits);
+        self.sys.write(" raWindow=");
+        self.sys.printU64(summary.fs_cache_read_ahead_window_pages);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_read_ahead_window_max_pages);
+        self.sys.write(" cap=");
+        self.sys.printU64(summary.fs_cache_capacity_min_pages);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_capacity_active_limit_pages);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_capacity_ram_limit_pages);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_capacity_max_pages);
+        self.sys.write(" pressure=");
+        self.sys.printU64(summary.fs_cache_capacity_pressure_level);
+        self.sys.write(" fill=");
+        self.sys.printU64(summary.fs_cache_fill_run_requests);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_fill_run_backend_requests);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_fill_run_pages);
+        self.sys.write(" sectors=");
+        self.sys.printU64(summary.fs_cache_fill_run_sectors);
+        self.sys.write(" bytes=");
+        self.sys.printU64(summary.fs_cache_fill_run_bytes);
+        self.sys.write(" fillErr=");
+        self.sys.printU64(summary.fs_cache_fill_run_failures);
+        self.sys.write(" retry=");
+        self.sys.printU64(summary.fs_cache_fill_run_retries);
+        self.sys.write(" maxRun=");
+        self.sys.printU64(summary.fs_cache_fill_run_max_pages);
+        self.sys.write(" copy=");
+        self.sys.printU64(summary.fs_cache_fill_scatter_copy_bytes);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_read_staging_copy_bytes);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_read_caller_copy_bytes);
+        self.sys.write(" locks=");
+        self.sys.printU64(summary.fs_cache_fill_lock_drops);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_read_publish_lock_drops);
+        self.sys.write(" trim=");
+        self.sys.printU64(summary.fs_cache_capacity_reductions);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_capacity_trimmed_pages);
+        self.sys.write(" raPages=");
+        self.sys.printU64(summary.fs_cache_read_ahead_pages_scheduled);
+        self.sys.write("/");
+        self.sys.printU64(summary.fs_cache_read_ahead_pages_issued);
+        self.sys.write(" randomReset=");
+        self.sys.printU64(summary.fs_cache_read_ahead_random_resets);
         self.sys.write(" reclaimClean=");
         self.sys.printU64(summary.fs_cache_clean_reclaimable_bytes);
         self.sys.write(" reclaimDirty=");
