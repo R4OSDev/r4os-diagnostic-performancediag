@@ -75,7 +75,8 @@ fachliche Subsystemwerte:
 - Audio-Latenz und Streamfortschritt
 - monotone Clockmetadaten, Boot-/Loader-Nanosekunden und IRQ-Zeitabdeckung
 - Loader-/R4P-Lifecycle und Hot-Path-Indizes
-- Loader-Dateipuffer und Speichergrenzen
+- Loader-Dateipuffer, physische Range-Bytes sowie der begrenzte
+  R4M0-Metadatenleser mit logischen Zugriffen, Treffern und Fuellungen
 - kanonische PCI-Inventur, Kapazitaetsrechnung und ECAM-Apertur
 - laufwerkslokale FS-Gates, controllerlokale Blockworker und residenten
   Direktpufferbetrieb ohne Bounce-Allokation oder -Kopie
@@ -129,6 +130,9 @@ Belegungen sowie Vor-/Nach-Deltas fuer Record-, Attribut-/Runlist-, INDX- und
 Pfadzugriffe, Generationen, Payload-/MFT-Spiegel-Retention, gezielte Record-/
 Attribut-/Verzeichnisinvalidierungen, globale Recovery, die vier entfernten
 Cacheklassen und Reclaim fest. Diese Felder stammen aus PerformanceSummary
-v14; ihre Summeninvarianten sind Teil der Conformance. Zusammen mit
+v14; ihre Summeninvarianten sind Teil der Conformance. Version 15 ergaenzt
+Loader-Range-Bytes, Readerinstanzen, logische Metadatenbytes/-zugriffe,
+Fenstertreffer/-fuellungen und direkte Grosszugriffe. Die Conformance verlangt
+aktive Wiederverwendung und die feste Fensterkapazitaet von 8 KiB. Zusammen mit
 dem Kalt-/Warmstatus des Laufs bleibt damit getrennt sichtbar, ob geringere
 Sektorarbeit oder wiederverwendete dekodierte Metadaten den Lauf erklaeren.
